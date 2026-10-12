@@ -42,7 +42,7 @@ Fine-grained encoding options for the current run. These are applied to the next
 - **Quality Bias** — `Smaller Size`, `Balanced` or `Better Quality`: how much to trade encode time vs picture quality at the same target size.
 - **Audio Mode** — `Compress` re-encodes sound to your chosen bitrate, `Keep Original` passes it through untouched.
 - **Match Source FPS** — read FPS from the loaded video instead of typing it.
-- **Padding** — pads the file with zero bytes to hit exactly the target size (useful when a limit is hard, e.g. 10 MB max).
+- **Padding** — pads the file with zero bytes to hit exactly the target size
 - **Size Tolerance MB** — acceptable `-`/`+` range around the target; leave `Any` to accept whatever the encoder produces.
 
 ### Defaults tab
@@ -79,7 +79,7 @@ run_hidden.vbs :: no console window
 
 ## Notes
 
-- For Discord's ~10 MB limit, pick `Size = 10` and `Audio = 96 kbps` — the app handles the bitrate math and retries until it fits the size tolerance.
+- For Discord's ~20 MB limit, pick `Size = 20` and `Audio = 96 kbps` — the app handles the bitrate math and retries until it fits the size tolerance.
 - AV1 needs a recent GPU (or `libsvtav1` on CPU) — H.265 is a safer pick if you're not sure.
 - Output never exceeds your target size: if the first encode lands over the limit, the app recalculates bitrate and re-encodes automatically.
 
