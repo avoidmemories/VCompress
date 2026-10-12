@@ -1,0 +1,32 @@
+# ========== Dependencies & build output ==========
+node_modules/
+dist/
+
+# ========== User state & runtime ==========
+compressor_settings.json
+*_2pass*
+*.log
+*.tmp
+*.bak
+
+# ========== FFmpeg binaries ==========
+# Binary is too large for a repo — users put ffmpeg/bin/ffmpeg.exe
+# themselves or the packaged release ships it.
+ffmpeg/bin/
+*.exe
+
+# ========== Windows / OS artifacts ==========
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# ========== Editor / IDE ==========
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ========== Source backups (ui/index.html.backup etc.) ==========
+ui/*.backup
+ui/*.bak

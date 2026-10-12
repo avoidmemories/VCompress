@@ -1,0 +1,47 @@
+{
+  "name": "vcompress",
+  "version": "1.0.0",
+  "description": "Portable VCompress",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win --x64"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3",
+    "rcedit": "^5.0.2"
+  },
+  "build": {
+    "appId": "com.vcompress.app",
+    "productName": "VCompress",
+    "executableName": "VCompress",
+    "asar": true,
+    "compression": "maximum",
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json",
+      "ui/**/*",
+      "!ui/**/*.backup",
+      "!ui/**/*.bak",
+      "!ui/**/*.tmp"
+    ],
+    "extraResources": [
+      {
+        "from": "ffmpeg/bin/ffmpeg.exe",
+        "to": "ffmpeg/ffmpeg.exe"
+      }
+    ],
+    "win": {
+      "target": "dir",
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": false
+    },
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    }
+  }
+}

@@ -1,0 +1,566 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VCompress</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- Custom Title Bar -->
+    <div class="title-bar">
+        <div class="title-bar-drag">
+            <span class="app-title">VCompress</span>
+        </div>
+        <div class="title-bar-controls">
+            <button class="title-btn minimize-btn" id="minimizeBtn">
+                <svg width="12" height="12" viewBox="0 0 12 12">
+                    <rect x="0" y="5" width="12" height="2" fill="currentColor"/>
+                </svg>
+            </button>
+            <button class="title-btn close-btn" id="closeBtn">
+                <svg width="12" height="12" viewBox="0 0 12 12">
+                    <path d="M1 1L11 11M11 1L1 11" stroke="currentColor" stroke-width="1.5"/>
+                </svg>
+            </button>
+        </div>
+    </div>
+
+    <!-- Main Container -->
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <div class="sidebar">
+            <div class="nav-items">
+                <button class="nav-item active" data-page="compress">
+                    <svg class="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none">
+                        <path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                    <span>Compress</span>
+                </button>
+                <button class="nav-item" data-page="clip">
+                    <svg class="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none">
+                        <path d="M5 6h14a1.5 1.5 0 0 1 1.5 1.5v10A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5v-10A1.5 1.5 0 0 1 5 6Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+                        <path d="M3.5 10h17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                        <path d="M7 6 4.8 10M12 6l-2.2 4M17 6l-2.2 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                        <path d="M7 14h10M7 16.7h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                    </svg>
+                    <span>Clip</span>
+                </button>
+                <button class="nav-item" data-page="settings">
+                    <svg class="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none">
+                        <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.4 1.1V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 8.6 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1.1-.4H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 8.6a1.65 1.65 0 0 0-.33-1.82l-.06-.06A2 2 0 1 1 7.04 3.9l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-.6 1.65 1.65 0 0 0 .4-1.1V3a2 2 0 1 1 4 0v.09A1.65 1.65 0 0 0 15.4 4.6a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.13.36.34.69.6 1 .3.25.69.4 1.1.4H21a2 2 0 1 1 0 4h-.09A1.65 1.65 0 0 0 19.4 15Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    <span>Settings</span>
+                </button>
+                <button class="nav-item" data-page="audio">
+                    <svg class="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none">
+                        <path d="M4 9v6M8 6v12M12 10v4M16 7v10M20 11v2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                    <span>Audio</span>
+                </button>
+                <button class="nav-item" data-page="defaults">
+                    <svg class="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none">
+                        <path d="M4 7h10M18 7h2M4 17h2M10 17h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        <circle cx="16" cy="7" r="2" stroke="currentColor" stroke-width="2"/>
+                        <circle cx="8" cy="17" r="2" stroke="currentColor" stroke-width="2"/>
+                    </svg>
+                    <span>Defaults</span>
+                </button>
+                <button class="nav-item" data-page="logs">
+                    <svg class="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none">
+                        <path d="M9 5h12M9 12h12M9 19h12M3 5h.01M3 12h.01M3 19h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                    <span>Logs</span>
+                </button>
+            </div>
+
+            <div class="sidebar-footer">
+                <div class="ffmpeg-status" id="ffmpegStatus">
+                    <div class="status-indicator"></div>
+                    <div class="status-text">
+                        <div class="status-label">FFmpeg</div>
+                        <div class="status-value">Checking...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content Area -->
+        <div class="content">
+            <!-- Compress Page -->
+            <div class="page active" id="compressPage">
+                <!-- Drop Zone -->
+                <div class="drop-zone" id="dropZone">
+                    <div class="drop-zone-content">
+                        <svg class="drop-icon" width="64" height="64" viewBox="0 0 24 24" fill="none">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                            <div class="drop-text">Drop media here</div>
+                        <div class="drop-subtext">or click to browse</div>
+                    </div>
+                </div>
+
+                <!-- File Info (hidden by default) -->
+                <div class="glass-card file-info-card" id="fileInfoCard" style="display: none;">
+                    <div class="card-header">
+                        <div class="card-title-row">
+                            <h3 class="card-title">Selected Video</h3>
+                            <span class="done-badge" id="doneBadge" style="display: none;">Done</span>
+                        </div>
+                        <button class="icon-btn" id="clearFileBtn">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                                <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="file-info">
+                        <div class="file-icon">
+                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
+                                <rect x="4" y="4" width="16" height="16" rx="2" stroke="currentColor" stroke-width="2"/>
+                                <path d="M10 9l5 3-5 3V9z" fill="currentColor"/>
+                            </svg>
+                        </div>
+                        <div class="file-details">
+                            <div class="file-name" id="fileName">video.mp4</div>
+                            <div class="file-meta">
+                                <span id="fileSize">0 MB</span>
+                                <span class="separator">&bull;</span>
+                                <span id="fileDuration">0:00</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Compress Button / Progress (hybrid) -->
+                <div class="compress-container" id="compressContainer" style="display: none;">
+                    <!-- Button State -->
+                    <button class="primary-btn" id="compressBtn">
+                        <span>Compress Video</span>
+                    </button>
+
+                    <!-- Progress State (hidden by default) -->
+                    <div class="glass-card progress-card" id="progressCard" style="display: none;">
+                        <div class="progress-header">
+                            <div class="progress-title-row">
+                                <p class="progress-status" id="progressStatus">Initializing...</p>
+                                <span class="render-mode-badge" id="renderModeBadge">Full video</span>
+                            </div>
+                            <div class="progress-percent" id="progressPercent">0%</div>
+                        </div>
+                        <div class="progress-bar-container">
+                            <div class="progress-bar">
+                                <div class="progress-fill" id="progressFill"></div>
+                            </div>
+                        </div>
+                        <div class="progress-footer">
+                            <span class="progress-time" id="progressTime">Time elapsed: 0s</span>
+                            <button class="text-btn" id="cancelBtn">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Save Location -->
+                <div class="glass-card output-settings-card" id="outputSettingsCard">
+                    <div class="card-header">
+                        <h3 class="setting-label output-title">Save Location</h3>
+                    </div>
+                    <div class="output-path-container">
+                        <input type="text" id="defaultOutputPath" class="input-field" readonly>
+                        <button class="secondary-btn" id="browseDefaultOutputBtn">Browse</button>
+                        <button class="secondary-btn" id="showOutputFolderBtn">Show in folder</button>
+                    </div>
+                </div>
+
+                <div class="glass-card compact-settings-card" id="compactSettingsCard">
+                    <div class="compact-settings-grid">
+                        <div class="setting-item">
+                            <label class="setting-label">Size</label>
+                            <div class="input-group">
+                                <input type="number" id="targetSize" class="input-field" value="10" min="1" max="10000">
+                                <span class="input-suffix">MB</span>
+                            </div>
+                        </div>
+                        <div class="setting-item" id="resolutionItem">
+                            <label class="setting-label">Resolution</label>
+                            <select id="resolution" class="select-field">
+                                <option value="original">Keep Original</option>
+                                <option value="2560x1440">2560x1440</option>
+                                <option value="1920x1080" selected>1920x1080</option>
+                                <option value="1280x720">1280x720</option>
+                                <option value="854x480">854x480</option>
+                                <option value="640x360">640x360</option>
+                            </select>
+                        </div>
+                        <div class="setting-item">
+                            <label class="setting-label">FPS</label>
+                            <input type="number" id="fps" class="input-field" value="60" min="1" max="240" step="0.001">
+                        </div>
+                        <div class="setting-item" id="audioBitrateItem">
+                            <label class="setting-label">Audio</label>
+                            <select id="audioBitrate" class="select-field">
+                                <option value="audio_only">Audio Only</option>
+                                <option value="remove">Remove</option>
+                                <option value="96">96 kbps</option>
+                                <option value="128" selected>128 kbps</option>
+                                <option value="160">160 kbps</option>
+                                <option value="192">192 kbps</option>
+                                <option value="256">256 kbps</option>
+                                <option value="320">320 kbps</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="page" id="clipPage">
+                <div class="clip-card">
+                    <div class="clip-empty" id="clipEmpty">Drop media here or click to browse</div>
+                    <div class="clip-workspace" id="clipWorkspace" style="display: none;">
+                        <div class="clip-video-frame">
+                            <video class="clip-video" id="clipVideo" preload="auto" playsinline></video>
+                            <img class="clip-frame-preview" id="clipFramePreview" alt="">
+                        </div>
+                        <div class="clip-timeline" id="clipTimeline">
+                            <div class="clip-track">
+                                <div class="clip-hover-time" id="clipHoverTime">0:00.00</div>
+                                <div class="clip-selected-range" id="clipSelectedRange"></div>
+                                <div class="clip-cursor-line" id="clipCursorLine"></div>
+                                <div class="clip-playhead" id="clipPlayhead"></div>
+                            </div>
+                        </div>
+                        <div class="clip-bottom-bar">
+                            <div class="clip-time-group">
+                                <span class="clip-time-label">Clip Time</span>
+                                <span class="clip-duration-badge" id="clipDurationBadge">No video</span>
+                            </div>
+                            <div class="clip-controls">
+                                <button type="button" class="clip-icon-btn" id="markStartBtn" title="Trim left" aria-label="Trim left">
+                                    <svg viewBox="0 0 24 24"><path d="M7 5v14"/><path d="M18 7l-7 5 7 5"/></svg>
+                                </button>
+                                <button type="button" class="clip-icon-btn" id="frameBackBtn" title="Previous frame" aria-label="Previous frame">
+                                    <svg viewBox="0 0 24 24"><path d="M15 7l-5 5 5 5"/></svg>
+                                </button>
+                                <button type="button" class="clip-play-btn" id="clipPlayBtn" title="Play / Pause" aria-label="Play / Pause">
+                                    <svg viewBox="0 0 24 24"><path d="M9 7l8 5-8 5z"/></svg>
+                                </button>
+                                <button type="button" class="clip-icon-btn" id="frameForwardBtn" title="Next frame" aria-label="Next frame">
+                                    <svg viewBox="0 0 24 24"><path d="M9 7l5 5-5 5"/></svg>
+                                </button>
+                                <button type="button" class="clip-icon-btn" id="markEndBtn" title="Trim right" aria-label="Trim right">
+                                    <svg viewBox="0 0 24 24"><path d="M17 5v14"/><path d="M6 7l7 5-7 5"/></svg>
+                                </button>
+                            </div>
+                            <div class="clip-action-group">
+                                <span class="clip-zoom-badge" id="clipZoomBadge">2x</span>
+                                <button class="secondary-btn tiny-btn clip-header-btn" id="compressClipBtn" disabled>Compress</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Settings Page -->
+            <div class="page" id="settingsPage">
+                <!-- Encoding Options -->
+                <div class="glass-card">
+                    <div class="card-header">
+                        <h3 class="card-title">Encoding Options</h3>
+                    </div>
+                    <div class="settings-panel-layout">
+                        <div class="settings-panel-grid">
+                            <div class="settings-panel">
+                                <div class="settings-panel-title">Encoding</div>
+                                <div class="settings-list compact-settings-list">
+                                    <div class="setting-row">
+                                        <div class="setting-info">
+                                            <div class="setting-name">Encoding Device</div>
+                                            <div class="setting-description">GPU for speed, CPU for compatibility</div>
+                                        </div>
+                                        <select id="encoderDevice" class="select-field setting-select">
+                                            <option value="gpu" selected>GPU</option>
+                                            <option value="cpu">CPU</option>
+                                        </select>
+                                    </div>
+                                    <div class="setting-row">
+                                        <div class="setting-info">
+                                            <div class="setting-name">Video Codec</div>
+                                            <div class="setting-description">H.265 and AV1 keep more quality at low size</div>
+                                        </div>
+                                        <select id="videoCodec" class="select-field setting-select">
+                                            <option value="h264" selected>H.264</option>
+                                            <option value="h265">H.265</option>
+                                            <option value="av1">AV1</option>
+                                        </select>
+                                    </div>
+                                    <div class="setting-row">
+                                        <div class="setting-info">
+                                            <div class="setting-name">Quality Bias</div>
+                                            <div class="setting-description keep-description" id="qualityBiasDescription">Normal quality and speed</div>
+                                        </div>
+                                        <select id="qualityBias" class="select-field setting-select">
+                                            <option value="smaller">Smaller Size</option>
+                                            <option value="balanced" selected>Balanced</option>
+                                            <option value="better">Better Quality</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="settings-panel">
+                                <div class="settings-panel-title">Options</div>
+                                <div class="settings-list compact-settings-list">
+                                    <div class="setting-row">
+                                        <div class="setting-info">
+                                            <div class="setting-name">Audio Mode</div>
+                                            <div class="setting-description">Compress or keep source audio</div>
+                                        </div>
+                                        <select id="audioMode" class="select-field setting-select">
+                                            <option value="compress" selected>Compress</option>
+                                            <option value="keep">Keep Original</option>
+                                        </select>
+                                    </div>
+                                    <label class="setting-row clickable-setting">
+                                        <div class="setting-info">
+                                            <div class="setting-name">Match Source FPS</div>
+                                            <div class="setting-description">Set FPS from loaded video</div>
+                                        </div>
+                                        <div class="toggle-switch">
+                                            <input type="checkbox" id="matchSourceFps">
+                                            <span class="toggle-slider"></span>
+                                        </div>
+                                    </label>
+                                    <label class="setting-row clickable-setting">
+                                        <div class="setting-info">
+                                            <div class="setting-name">Padding</div>
+                                            <div class="setting-description keep-description">Pad output file to exact target size</div>
+                                        </div>
+                                        <div class="toggle-switch">
+                                            <input type="checkbox" id="usePadding">
+                                            <span class="toggle-slider"></span>
+                                        </div>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="settings-panel tolerance-panel">
+                            <div class="setting-row tolerance-inline-row clickable-setting" data-toggle-target="toleranceEnabled">
+                                <div class="setting-info">
+                                    <div class="setting-name">Size Tolerance MB</div>
+                                </div>
+                                <div class="tolerance-controls" id="toleranceControls">
+                                    <label class="tolerance-control">
+                                        <span>-</span>
+                                        <div class="tolerance-picker">
+                                            <input type="text" id="toleranceMinus" class="input-field tolerance-select" value="5" inputmode="decimal">
+                                            <button type="button" class="tolerance-arrow" data-target="toleranceMinus" aria-label="Choose minus tolerance"></button>
+                                        </div>
+                                    </label>
+                                    <label class="tolerance-control">
+                                        <span>+</span>
+                                        <div class="tolerance-picker">
+                                            <input type="text" id="tolerancePlus" class="input-field tolerance-select" value="1" inputmode="decimal">
+                                            <button type="button" class="tolerance-arrow" data-target="tolerancePlus" aria-label="Choose plus tolerance"></button>
+                                        </div>
+                                    </label>
+                                </div>
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="toleranceEnabled">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="page" id="audioPage">
+                <div class="glass-card audio-page-card">
+                    <div class="card-header">
+                        <div>
+                            <h3 class="card-title">Audio Tracks</h3>
+                            <p class="page-subtitle">Choose which source audio tracks are included in render</p>
+                        </div>
+                        <span class="clip-audio-count-pill" id="clipAudioCount">0</span>
+                    </div>
+                    <div class="audio-page-panel" id="clipAudioPopover">
+                        <div class="clip-audio-list" id="clipAudioList"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="page" id="defaultsPage">
+                <div class="glass-card compact-defaults-card">
+                    <div class="card-header">
+                        <h3 class="card-title">Startup Defaults</h3>
+                    </div>
+                    <div class="compact-settings-grid">
+                        <div class="setting-item">
+                            <label class="setting-label">Size</label>
+                            <div class="input-group">
+                                <input type="number" id="defaultTargetSize" class="input-field" value="10" min="1" max="10000">
+                                <span class="input-suffix">MB</span>
+                            </div>
+                        </div>
+                        <div class="setting-item">
+                            <label class="setting-label">Resolution</label>
+                            <select id="defaultResolution" class="select-field">
+                                <option value="original">Keep Original</option>
+                                <option value="2560x1440">2560x1440</option>
+                                <option value="1920x1080" selected>1920x1080</option>
+                                <option value="1280x720">1280x720</option>
+                                <option value="854x480">854x480</option>
+                                <option value="640x360">640x360</option>
+                            </select>
+                        </div>
+                        <div class="setting-item">
+                            <label class="setting-label">FPS</label>
+                            <input type="number" id="defaultFps" class="input-field" value="60" min="1" max="240" step="0.001">
+                        </div>
+                        <div class="setting-item">
+                            <label class="setting-label">Audio</label>
+                            <select id="defaultAudioBitrate" class="select-field">
+                                <option value="audio_only">Audio Only</option>
+                                <option value="remove">Remove</option>
+                                <option value="96">96 kbps</option>
+                                <option value="128" selected>128 kbps</option>
+                                <option value="160">160 kbps</option>
+                                <option value="192">192 kbps</option>
+                                <option value="256">256 kbps</option>
+                                <option value="320">320 kbps</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="glass-card">
+                    <div class="card-header">
+                        <h3 class="card-title">Startup Encoding</h3>
+                    </div>
+                    <div class="settings-panel-layout">
+                        <div class="settings-panel-grid">
+                            <div class="settings-panel">
+                                <div class="settings-panel-title">Encoding</div>
+                                <div class="settings-list compact-settings-list">
+                                    <div class="setting-row">
+                                        <div class="setting-info">
+                                            <div class="setting-name">Encoding Device</div>
+                                            <div class="setting-description">Default render device</div>
+                                        </div>
+                                        <select id="defaultEncoderDevice" class="select-field setting-select">
+                                            <option value="gpu" selected>GPU</option>
+                                            <option value="cpu">CPU</option>
+                                        </select>
+                                    </div>
+                                    <div class="setting-row">
+                                        <div class="setting-info">
+                                            <div class="setting-name">Video Codec</div>
+                                            <div class="setting-description">Default output codec</div>
+                                        </div>
+                                        <select id="defaultVideoCodec" class="select-field setting-select">
+                                            <option value="h264" selected>H.264</option>
+                                            <option value="h265">H.265</option>
+                                            <option value="av1">AV1</option>
+                                        </select>
+                                    </div>
+                                    <div class="setting-row">
+                                        <div class="setting-info">
+                                            <div class="setting-name">Quality Bias</div>
+                                            <div class="setting-description keep-description" id="defaultQualityBiasDescription">Normal quality and speed</div>
+                                        </div>
+                                        <select id="defaultQualityBias" class="select-field setting-select">
+                                            <option value="smaller">Smaller Size</option>
+                                            <option value="balanced" selected>Balanced</option>
+                                            <option value="better">Better Quality</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="settings-panel">
+                                <div class="settings-panel-title">Options</div>
+                                <div class="settings-list compact-settings-list">
+                                    <div class="setting-row">
+                                        <div class="setting-info">
+                                            <div class="setting-name">Audio Mode</div>
+                                            <div class="setting-description">Default compress or keep behavior</div>
+                                        </div>
+                                        <select id="defaultAudioMode" class="select-field setting-select">
+                                            <option value="compress" selected>Compress</option>
+                                            <option value="keep">Keep Original</option>
+                                        </select>
+                                    </div>
+                                    <label class="setting-row clickable-setting">
+                                        <div class="setting-info">
+                                            <div class="setting-name">Match Source FPS</div>
+                                            <div class="setting-description">Default FPS matching</div>
+                                        </div>
+                                        <div class="toggle-switch">
+                                            <input type="checkbox" id="defaultMatchSourceFps">
+                                            <span class="toggle-slider"></span>
+                                        </div>
+                                    </label>
+                                    <label class="setting-row clickable-setting">
+                                        <div class="setting-info">
+                                            <div class="setting-name">Padding</div>
+                                            <div class="setting-description keep-description">Enabled when the app opens</div>
+                                        </div>
+                                        <div class="toggle-switch">
+                                            <input type="checkbox" id="defaultUsePadding">
+                                            <span class="toggle-slider"></span>
+                                        </div>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="settings-panel tolerance-panel">
+                            <div class="setting-row tolerance-inline-row clickable-setting" data-toggle-target="defaultToleranceEnabled">
+                                <div class="setting-info">
+                                    <div class="setting-name">Size Tolerance MB</div>
+                                </div>
+                                <div class="tolerance-controls" id="defaultToleranceControls">
+                                    <label class="tolerance-control">
+                                        <span>-</span>
+                                        <div class="tolerance-picker">
+                                            <input type="text" id="defaultToleranceMinus" class="input-field tolerance-select" value="5" inputmode="decimal">
+                                            <button type="button" class="tolerance-arrow" data-target="defaultToleranceMinus" aria-label="Choose default minus tolerance"></button>
+                                        </div>
+                                    </label>
+                                    <label class="tolerance-control">
+                                        <span>+</span>
+                                        <div class="tolerance-picker">
+                                            <input type="text" id="defaultTolerancePlus" class="input-field tolerance-select" value="1" inputmode="decimal">
+                                            <button type="button" class="tolerance-arrow" data-target="defaultTolerancePlus" aria-label="Choose default plus tolerance"></button>
+                                        </div>
+                                    </label>
+                                </div>
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="defaultToleranceEnabled">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Logs Page -->
+            <div class="page" id="logsPage">
+                <div class="glass-card logs-card">
+                    <div class="card-header">
+                        <h3 class="card-title">Console Output</h3>
+                        <button class="text-btn" id="copyLogsBtn">Copy Logs</button>
+                    </div>
+                    <div class="log-container" id="logContainer">
+                        <div class="log-empty">No logs yet. Start compressing a video to see output.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
