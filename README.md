@@ -82,7 +82,3 @@ run_hidden.vbs :: no console window
 - For Discord's ~20 MB limit, pick `Size = 20` and `Audio = 96 kbps` — the app handles the bitrate math and retries until it fits the size tolerance.
 - AV1 needs a recent GPU (or `libsvtav1` on CPU) — H.265 is a safer pick if you're not sure.
 - Output never exceeds your target size: if the first encode lands over the limit, the app recalculates bitrate and re-encodes automatically.
-
-## License
-
-MIT. FFmpeg binary is excluded from the repo — see [LICENSING](ffmpeg.org/legal.html) if you redistribute it.
