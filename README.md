@@ -3,7 +3,7 @@
 A portable Electron app that compresses any video down to a **target file size in MB** — built primarily for sending clips in Discord, where the free tier caps uploads around 10-20 MB. You drop a video, tell it how big the result should be, and it figures out the bitrate needed to land there, then re-encodes with bundled FFmpeg.
 
 <p align="center">
-  <img src="https://imgur.com/gallery/vcompress-ui-preview-3kMWOlO" alt="Preview" width="600">
+  <img src="https://i.imgur.com/PY8Zhzh.png" alt="Preview" width="600">
 </p>
 
 ## What it does
