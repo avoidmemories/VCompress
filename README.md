@@ -2,6 +2,14 @@
 
 A portable Electron app that compresses any video down to a **target file size in MB** — built primarily for sending clips in Discord, where the free tier caps uploads around 10-20 MB. You drop a video, tell it how big the result should be, and it figures out the bitrate needed to land there, then re-encodes with bundled FFmpeg.
 
+> [!IMPORTANT]
+> **Choose the right download before installing:**
+>
+> - **`VCompress-Fast.zip`** — fastest NVIDIA GPU encoding. Uses BtbN FFmpeg and requires an NVIDIA driver **610.00 or newer**. Best for modern RTX systems.
+> - **`VCompress-Compatible.zip`** — recommended when the NVIDIA driver is below `610.00`, or when Fast says NVENC is unavailable. Uses Gyan FFmpeg and supports older NVIDIA driver branches, including many GTX 10xx / GTX 16xx PCs.
+>
+> GPU codec support still depends on the hardware: AV1 NVENC requires RTX 40-series or newer; GTX 10xx / GTX 16xx use H.264 or H.265.
+
 <p align="center">
   <img src="https://i.imgur.com/PY8Zhzh.png" alt="Preview" width="1000">
 </p>
@@ -10,7 +18,7 @@ A portable Electron app that compresses any video down to a **target file size i
 
 - Compresses video to an exact target size, not just a quality level
 - GPU encode via NVENC or CPU 2-pass encode, three codecs each
-- **Fast GPU path**: a short probe run measures the encoder's real bitrate accuracy before the full encode, so the first attempt usually lands on target — no wasted retries
+- **GPU compatibility probe**: checks H.264, H.265 and AV1 NVENC support at startup and reports incompatible driver/GPU combinations clearly
 - Clips a segment with a timeline before compressing
 - Picks audio tracks (named — e.g. game sound vs microphone), removes or keeps original sound, exports audio-only
 - Handles glitchy DVR/Game-Bar recordings gracefully: warns in the log instead of silently producing garbage
@@ -96,7 +104,7 @@ The output lands in `dist/` (an unpacked portable folder with `VCompress.exe`).
 
 - Windows 10/11
 - Node.js (setup.bat installs it via winget if missing) — only for running from source
-- FFmpeg binary — bundled in the release; for source builds put `ffmpeg.exe` into `ffmpeg/bin/`. The [gyan.dev full build](https://www.gyan.dev/ffmpeg/builds/) is what the release ships: it includes SVT-AV1 for fast CPU AV1 encoding, and its NVENC runtime works with Nvidia drivers from ~537 onward — covering older GPUs (GTX 10xx/16xx). Recent [BtbN](https://github.com/BtbN/FFmpeg-Builds/releases) master builds require very new drivers (~610+) and drop NVENC on machines whose GPU line has ended support.
+- FFmpeg binary — bundled in each release. **Compatible** uses the [gyan.dev full build](https://www.gyan.dev/ffmpeg/builds/) for broader old-driver support. **Fast** uses a fixed [BtbN](https://github.com/BtbN/FFmpeg-Builds/releases) build and requires NVIDIA driver `610.00+` for NVENC. For source builds, put `ffmpeg.exe` into `ffmpeg/bin/`.
 
 ## Notes
 
