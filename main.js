@@ -1146,10 +1146,16 @@ async function probeGpuBitrate(input, vbr, vf, codec, profile, duration) {
     const started = Date.now();
     await new Promise((resolve, reject) => {
       const child = spawn(FFMPEG, args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+      // Register as the killable child so CANCEL murders the probe too —
+      // an unkillable 10+ second probe kept the whole compress handler
+      // alive after cancel, making restarts wait for nothing.
+      currentProcess = child;
       let stderr = '';
       child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
       child.on('error', reject);
       child.on('close', (code) => {
+        if (currentProcess === child) currentProcess = null;
+        if (cancelRequested) { reject(new Error('Cancelled')); return; }
         if (code === 0) resolve();
         else reject(new Error(stderr.slice(-800) || `FFmpeg exited with code ${code}`));
       });
@@ -1665,6 +1671,17 @@ let compressionJobActive = false;
 let compressionGeneration = 0;
 
 ipcMain.handle('compress-video', async (_event, params) => {
+  // A restart during a cancel-unwind used to bounce here with
+  // "Already processing" while the previous job died for a second or two —
+  // the UI had to be clicked twice to actually start. Instead, WAIT for
+  // the lock (bounded) so a queued start runs as soon as the old job is
+  // gone; the UI already shows "Waiting for previous job..." meanwhile.
+  const lockDeadline = Date.now() + 15000;
+  while (compressionJobActive && Date.now() < lockDeadline) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    // A cancel landed while we were waiting — our generation will be
+    // bumped below; keep the check after acquiring the lock.
+  }
   if (compressionJobActive) return { success: false, error: 'Already processing' };
   compressionJobActive = true;
   const myGeneration = ++compressionGeneration;

@@ -2070,13 +2070,20 @@ class VCompress {
         }
     }
 
-    showProgressState(useClip = false) {
+    showProgressState(useClip = false, replayAnimation = true) {
+        const wasVisible = this.progressCard.style.display !== 'none';
         this.resetProgress(useClip);
         this.compressBtn.style.display = 'none';
         this.progressCard.style.display = 'flex';
-        this.progressCard.style.animation = 'none';
-        void this.progressCard.offsetWidth;
-        this.progressCard.style.animation = '';
+        // Replay the slide-in ONLY on a real button→progress transition.
+        // A second call while the card is already showing (queued restart
+        // waiting for the previous job to die) must NOT restart the
+        // animation — that was the "progress flashes twice" bug.
+        if (replayAnimation && !wasVisible) {
+            this.progressCard.style.animation = 'none';
+            void this.progressCard.offsetWidth;
+            this.progressCard.style.animation = '';
+        }
     }
 
     showButtonState() {
