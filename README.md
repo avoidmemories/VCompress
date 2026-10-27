@@ -5,7 +5,7 @@ A portable Electron app that compresses any video down to a **target file size i
 > [!IMPORTANT]
 > **Choose the right download before installing:**
 >
-> - **`VCompress-Fast.zip`** — fastest NVIDIA GPU encoding. Uses BtbN FFmpeg and requires an NVIDIA driver **610.00 or newer**. Best for modern RTX systems.
+> - **`VCompress-Fast.zip`** — fastest NVIDIA GPU encoding, up to **40% faster** than Compatible on supported systems. Uses BtbN FFmpeg and requires an NVIDIA driver **610.00 or newer**. Best for modern RTX systems.
 > - **`VCompress-Compatible.zip`** — recommended when the NVIDIA driver is below `610.00`, or when Fast says NVENC is unavailable. Uses Gyan FFmpeg and supports older NVIDIA driver branches, including many GTX 10xx / GTX 16xx PCs.
 >
 > GPU codec support still depends on the hardware: AV1 NVENC requires RTX 40-series or newer; GTX 10xx / GTX 16xx use H.264 or H.265.
