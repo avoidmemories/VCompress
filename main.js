@@ -62,6 +62,10 @@ function resolveFFmpeg() {
 
 let FFMPEG = resolveFFmpeg();
 let NVENC_AVAILABLE = null; // null = not probed yet, true/false after probe
+// Per-codec NVENC map (h264/h265/av1 -> {ok, reason}); filled by the probe.
+// Older GPUs encode some codecs but not others — this lets GPU stay enabled
+// with a warning instead of hard-switching everything to CPU.
+let NVENC_CODEC_SUPPORT = null;
 
 function isMediaFile(filePath) {
   if (!filePath || typeof filePath !== 'string') return false;
@@ -76,18 +80,41 @@ function getOpenFileArg(argv = process.argv) {
 // Result is cached for the app's lifetime and surfaced to the UI so the GPU
 // option can be disabled on machines without an NVIDIA GPU instead of failing
 // mid-compress.
-function probeNvencSupport() {
-  return new Promise((resolve) => {
+// Probes NVENC support PER CODEC and captures the failure reason. Older
+// GPUs (GTX 10xx Pascal, GTX 16xx Turing) DO have first-generation NVENC
+// that encodes H.264/HEVC fine — they only lack AV1 and modern presets.
+// A single h264-only probe wrongly disabled GPU mode entirely on those
+// machines; the per-codec map lets the UI keep GPU selectable and just
+// warn about the codecs that actually fail. The stderr tail also tells
+// stale-driver cases ("OpenEncodeSessionEx failed") from codec-missing
+// ones ("Codec type or id mismatches"), which is the info users need.
+function probeNvencCodecs() {
+  const codecs = ['h264', 'h265', 'av1'];
+  const encoders = { h264: 'h264_nvenc', h265: 'hevc_nvenc', av1: 'av1_nvenc' };
+  return Promise.all(codecs.map((codec) => new Promise((resolve) => {
     const child = spawn(FFMPEG, [
       '-hide_banner', '-loglevel', 'error',
       // 145x145: NVENC rejects frame dimensions below ~149 px; a probe
       // smaller than that fails with "invalid param" even on capable GPUs.
       '-f', 'lavfi', '-i', 'nullsrc=s=256x256:d=0.1',
-      '-c:v', 'h264_nvenc', '-f', 'null', '-'
-    ], { windowsHide: true, stdio: ['ignore', 'ignore', 'ignore'] });
-    child.on('error', () => resolve(false));
-    child.on('close', (code) => resolve(code === 0));
+      '-c:v', encoders[codec], '-f', 'null', '-'
+    ], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    child.on('error', () => resolve({ codec, ok: false, reason: 'spawn failed' }));
+    child.on('close', (code) => resolve({ codec, ok: code === 0, reason: code === 0 ? '' : (stderr.trim().split(/\r?\n/).pop() || `exit ${code}`).slice(0, 160) }));
+  }))).then((results) => {
+    const map = {};
+    for (const r of results) map[r.codec] = r;
+    // Overall: GPU is usable when at least one codec encodes.
+    const anyOk = results.some((r) => r.ok);
+    return { supported: anyOk, codecs: map };
   });
+}
+
+// Legacy single boolean probe kept for compatibility: true iff h264 works.
+function probeNvencSupport() {
+  return probeNvencCodecs().then((result) => result.supported && result.codecs.h264.ok);
 }
 
 function ffmpegStatus() {
@@ -109,7 +136,7 @@ function ffmpegStatus() {
       version = line.includes('ffmpeg') ? line : 'Ready';
     }
   }
-  return { found, path: FFMPEG, version, nvenc: NVENC_AVAILABLE };
+  return { found, path: FFMPEG, version, nvenc: NVENC_AVAILABLE, nvenc_codecs: NVENC_CODEC_SUPPORT };
 }
 
 function sendLog(message, type = 'info') {
@@ -1614,11 +1641,22 @@ function createWindow() {
         // as "no NVENC", which is wrong. Leave it unknown until ffmpeg exists.
         sendLog('NVENC probe skipped: FFmpeg not found.', 'warning');
       } else {
-        probeNvencSupport().then((available) => {
-          NVENC_AVAILABLE = available;
+        probeNvencCodecs().then((result) => {
+          NVENC_AVAILABLE = result.supported;
+          NVENC_CODEC_SUPPORT = result.codecs;
           mainWindow?.webContents.send('ffmpeg-status', ffmpegStatus());
-          if (!available) {
+          if (!result.supported) {
             sendLog('GPU encoder (NVENC) not available - CPU mode will be used.', 'warning');
+            for (const codec of Object.values(result.codecs)) {
+              if (!codec.ok && codec.reason) sendLog(`  ${codec.codec}: ${codec.reason}`, 'warning');
+            }
+          } else {
+            // Partial support (e.g. Pascal GPUs: H.264/HEVC yes, AV1 no) —
+            // keep GPU mode enabled and tell the user what works.
+            const failed = Object.values(result.codecs).filter((c) => !c.ok);
+            if (failed.length) {
+              sendLog(`GPU encoders available: ${Object.values(result.codecs).filter((c) => c.ok).map((c) => c.codec.toUpperCase()).join(', ')}. Not supported on this GPU: ${failed.map((c) => c.codec.toUpperCase()).join(', ')}.`, 'warning');
+            }
           }
         });
       }

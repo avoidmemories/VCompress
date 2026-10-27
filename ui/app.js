@@ -2236,13 +2236,14 @@ class VCompress {
             }
         }
 
-        this.applyNvencStatus(status.nvenc);
+        this.applyNvencStatus(status.nvenc, status.nvenc_codecs);
     }
 
     // status.nvenc: null = probe not finished yet, true/false after probe.
-    // When false, GPU encodes would fail mid-run on this machine, so the GPU
-    // option is disabled and CPU is selected instead.
-    applyNvencStatus(nvenc) {
+    // When false, NO codec works on this machine — GPU disabled, CPU selected.
+    // Partial support (e.g. Pascal: H.264/HEVC ok, AV1 missing) keeps GPU
+    // enabled; unsupported codec options are only warned about in the log.
+    applyNvencStatus(nvenc, codecs = null) {
         const gpuOption = this.encoderDevice?.querySelector('option[value="gpu"]');
         const defaultGpuOption = this.defaultEncoderDevice?.querySelector('option[value="gpu"]');
         if (nvenc === null || nvenc === undefined) {
@@ -2272,7 +2273,28 @@ class VCompress {
             if (this.defaultEncoderDevice?.value === 'gpu') {
                 this.defaultEncoderDevice.value = 'cpu';
             }
+            return;
         }
+
+        // Partial GPU support: disable only the codecs that fail (e.g. AV1
+        // on Pascal) instead of killing GPU mode entirely.
+        if (nvenc && codecs && typeof codecs === 'object') {
+            const settingsSelect = this.videoCodec;
+            const defaultsSelect = this.defaultVideoCodec;
+            for (const codec of Object.keys(codecs)) {
+                const info = codecs[codec];
+                if (!info || info.ok) continue;
+                [settingsSelect, defaultsSelect].forEach((select) => {
+                    if (!select) return;
+                    const option = select.querySelector(`option[value="${codec}"]`);
+                    if (option) option.textContent = `${this.codecLabel(codec)} (CPU only)`;
+                });
+            }
+        }
+    }
+
+    codecLabel(codec) {
+        return ({ h264: 'H.264', h265: 'H.265', av1: 'AV1' })[codec] || codec;
     }
 
     log(message, type = 'info') {
