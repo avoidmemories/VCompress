@@ -974,7 +974,13 @@ function gpuArgsForCodec(codec, vbr, profile) {
   // faster; p5 only pays off when quality matters and the bitrate budget
   // is not the binding constraint anyway.
   const preset = profile?.gpuPreset || 'p4';
-  const common = ['-preset', preset, '-b:v', `${vbr}k`, '-maxrate', `${vbr}k`, '-bufsize', `${Math.floor(vbr * 1.25)}k`];
+  // bufsize: the VBR "slack" the encoder may deviate by. Measured on real
+  // clips: 1.25x lets AV1 accumulate +5.5% over a short encode (102.3% of
+  // target); the ORIGINAL project used bufsize == maxrate for AV1 and
+  // landed 99.7% first-try. H.264/H.265 keep 1.25x — vbr_hq's fullres
+  // multipass reins them in fine (matches the original's behavior there).
+  const bufMult = codec === 'av1' ? 1 : 1.25;
+  const common = ['-preset', preset, '-b:v', `${vbr}k`, '-maxrate', `${vbr}k`, '-bufsize', `${Math.floor(vbr * bufMult)}k`];
   if (codec === 'h264') return [...common, '-tune', 'hq', '-rc', 'vbr', '-multipass', 'fullres', '-profile:v', 'high', '-tag:v', 'avc1'];
   if (codec === 'h265') return [...common, '-tune', 'hq', '-rc', 'vbr', '-multipass', 'fullres', '-tag:v', 'hvc1'];
   // AV1: VBR (not CBR) — a CBR budget poisoned by damaged frames at the
