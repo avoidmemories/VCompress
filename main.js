@@ -1157,17 +1157,16 @@ function gpuEncodeArgs(gpuPipeline, input, output, vbr, abr, vf, codec, audioMod
 // with a corrected bitrate instead of relying on retry loops. Runs in the
 // normal output dir; ~seconds of work, cleaned up afterwards.
 async function probeGpuBitrate(input, vbr, vf, codec, profile, duration) {
-  // Probe EVERYTHING now, including short clips. Rationale (measured):
-  // AV1-NVENC's VBR with multipass qres UNDERSHOT a 4.1 Mbps target by ~3%
-  // on easy content — combined with the container-overhead reserve that was
-  // already subtracting, a 35s/20MB clip landed 1.7MB short (pure padding).
-  // The sign of VBR error is not predictable; only a measured probe is.
-  // Short clips get a cheap 3s probe (≈1s of GPU time) — far cheaper than
-  // the ~4s a full retry of even a short encode costs.
-  if (!duration || duration < 4) return null;
-  const probeSecs = duration < 20
-    ? 3
-    : Math.min(15, Math.max(5, Math.floor(duration * 0.1)));
+  // Diagnostic-only probe (bitrate correction removed — a single mid-file
+  // segment misreads non-uniform content by ±11%, corrupting an otherwise
+  // accurate plan). Its one honest job: encoder-floor detection on LONG
+  // videos, where a floor-induced overshoot costs a full wasted encode.
+  // Short clips (<90s) skip it entirely: a retry there costs seconds and
+  // the feasibility pre-check already warned about floors. Long videos get
+  // a cheap 2s probe (≈0.8s GPU) — enough to see ratio > 2 (floor) without
+  // spending real encoding time.
+  if (!duration || duration < 90) return null;
+  const probeSecs = 2;
   const probeStart = Math.max(0, Math.floor((duration - probeSecs) / 2));
   const probeOutput = path.join(app.getPath('temp'), `vcompress-gpu-probe-${process.pid}.mp4`);
   const args = [
@@ -1406,7 +1405,14 @@ async function compress(params) {
   }
 
   if (useGpu) {
-    let vbr = calcBitrate(targetMb, duration, bitrateAudioKbps, profile.gpuSafety);
+    // With padding enabled, aim at 100% of the target: the encoder is
+    // measured accurate to ±1%, so a 100%-aim lands at 99-101% — 99% means
+    // a sliver of padding and NO retry (fast path), 101% a single rare
+    // downward retry. Aiming at 97% (safety) GUARANTEED a ~3% undershoot,
+    // which forced the quality-fill retry on every single compression —
+    // that was the measurable slowdown. Without padding, keep the safety
+    // margin: overshoot there is a hard failure.
+    let vbr = calcBitrate(targetMb, duration, bitrateAudioKbps, usePadding ? 1.0 : profile.gpuSafety);
     sendLog(`Resolution      : ${keepOriginalResolution ? 'original' : resolution}`);
     sendLog(`Duration        : ${duration.toFixed(1)} sec${clipDuration ? ` (clip ${formatSeconds(clipStart)}-${formatSeconds(clipEnd)})` : ''}`);
     sendLog(`Target size     : ${targetMb} MB (${targetBytes} bytes max)`);
