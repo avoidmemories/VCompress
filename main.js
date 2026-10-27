@@ -1701,8 +1701,24 @@ ipcMain.handle('cancel-compression', () => {
   // lock check but hasn't spawned yet rejects itself as cancelled.
   compressionGeneration++;
   cancelRequested = true;
-  if (currentProcess) currentProcess.kill('SIGTERM');
-  cleanupOutputArtifacts(currentOutputPath, currentPassLog);
+  if (currentProcess) {
+    // Kill the whole process TREE hard: ffmpeg may have spawned helper
+    // processes, and a soft SIGTERM lets it flush buffers for seconds —
+    // that was the 2-3s cancel delay. taskkill /T /F kills the tree now.
+    try {
+      spawn('taskkill', ['/PID', String(currentProcess.pid), '/T', '/F'], { windowsHide: true });
+    } catch {}
+    try { currentProcess.kill('SIGKILL'); } catch {}
+  }
+  // Defer artifact cleanup: the output file may still be held open by the
+  // dying ffmpeg for a moment — deleting it synchronously here would fail
+  // on Windows (file locked) and stall the cancel. The compress-video
+  // handler's catch-block runs cleanup again once the process is gone.
+  const out = currentOutputPath;
+  const log = currentPassLog;
+  if (out || log) {
+    setTimeout(() => cleanupOutputArtifacts(out, log), 500);
+  }
   return { success: true };
 });
 

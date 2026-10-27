@@ -2001,28 +2001,32 @@ class VCompress {
         this.compressionRunId++;
         this.isCancelling = true;
         this.log('Cancelling...', 'warning');
-        try {
-            if (window.pywebview) {
-                await window.pywebview.api.cancel_compression();
-            }
-        } catch { /* backend may already be done */ }
-        // The old startCompression()'s compress_video call is still in
-        // flight; its finally-block will notice the stale runId and clean
-        // up. Wait for it so a quick restart can't overlap two jobs.
-        if (this.activeCompressionPromise) {
-            try { await this.activeCompressionPromise; } catch { /* already handled by its owner */ }
-            // the job's own finally clears the reference; do not null it here
-            // so we never race a newer job that just claimed the slot.
-        }
-        this.isCancelling = false;
+        // 1. UI reacts INSTANTLY: kill the timer, restore the button. The
+        //    user must never wait for the backend to unwind — the hard
+        //    taskkill + deferred cleanup in main make the kill itself fast,
+        //    but the compress_video promise may still take a moment to
+        //    resolve, and that is background bookkeeping, not UX.
+        this.stopTimer();
         this.isProcessing = false;
         this.showButtonState();
         this.setCompressSettingsLocked(false);
         if (this.currentFile) this.currentFile.output_path = null;
         this.setShowFolderFlash(false);
         this.resetProgress();
-        this.stopTimer();
         this.log('Compression cancelled by user', 'warning');
+        // 2. Fire the backend kill and await full unwind in the background:
+        //    isCancelling stays true until the old job is provably dead, so
+        //    a quick restart still can't overlap two encodes — but the
+        //    button is already responsive.
+        try {
+            if (window.pywebview) {
+                await window.pywebview.api.cancel_compression();
+            }
+        } catch { /* backend may already be done */ }
+        if (this.activeCompressionPromise) {
+            try { await this.activeCompressionPromise; } catch { /* handled by its owner */ }
+        }
+        this.isCancelling = false;
     }
 
     setDoneBadge(visible) {
