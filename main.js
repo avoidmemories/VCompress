@@ -1440,21 +1440,16 @@ async function compress(params) {
     sendProgress(8, 'Probing encoder rate accuracy...');
     const probeRatio = await probeGpuBitrate(input, vbr, vf, codec, profile, duration);
     if (cancelRequested) throw new Error('Cancelled');
-    if (probeRatio && Math.abs(probeRatio - 1) > 0.05) {
-      // Partial trust in the probe: it samples ONE mid-file segment, but
-      // content complexity varies across the file (measured: probe said
-      // +10% overshoot, whole-file encode came in 3% UNDER — the segment
-      // was denser than average). Correcting by the full ratio over-steers;
-      // exponent 0.7 moves most of the way while damping segment bias.
-      // Upward correction (encoder undershoots) is allowed — that closes
-      // the gap toward the target; downward is clamped so the damped value
-      // never exceeds the raw budget.
-      const dampedRatio = Math.pow(probeRatio, 0.7);
-      const probedVbr = Math.max(Math.floor(vbr / dampedRatio), 1);
-      if (probedVbr !== vbr) {
-        sendLog(`  -> probe-adjusted bitrate: ${probedVbr} kbps (was ${vbr})`);
-        vbr = probedVbr;
-      }
+    // Probe result is DIAGNOSTIC ONLY now. Measured on real clips: the
+    // encoder hits its requested bitrate within ±1% over a whole file, but
+    // a single mid-file segment reads +11% dense (content complexity is
+    // non-uniform) — correcting by the segment ratio deflated the bitrate
+    // and the output landed 8-16% under target on consecutive tries.
+    // The formula's own accuracy is what the retry loop works with; the
+    // probe's job is to expose encoder-floor cases early (ratio > 2 means
+    // the encoder IGNORES the bitrate — that's actionable, logged below).
+    if (probeRatio && probeRatio > 2) {
+      sendLog(`  -> probe warning: encoder produced ${probeRatio.toFixed(2)}x the requested rate — the target may be below the encoder's floor.`, 'warning');
     }
     sendProgress(10, 'Encoding (GPU)...');
 
@@ -1475,6 +1470,22 @@ async function compress(params) {
       const fit = outputFitStatus(curBytes, targetBytes, tolerance);
 
       if (fit.ok) {
+        // Significant undershoot + padding enabled: those bytes would be
+        // zero-filled. One quick GPU retry at a higher bitrate converts
+        // them into real quality — worth ~seconds on typical clips. Only
+        // when the leftover exceeds 2% of the target (small gaps pad fine).
+        if (usePadding && fit.direction !== 'over' && curBytes < targetBytes * 0.98 && iteration < 2) {
+          const retryScale = targetBytes / Math.max(1, curBytes - abr * 1000 * duration / 8 / 1024);
+          const retryVbr = Math.max(Math.floor(vbr * Math.min(retryScale, 1.15)), 1);
+          if (retryVbr > vbr * 1.02) {
+            sendLog(`  -> ${((targetBytes - curBytes) / 1048576).toFixed(2)} MB short of target: retrying at ${retryVbr} kbps for more quality`);
+            previousBytes = curBytes;
+            vbr = retryVbr;
+            ok = await encodeGpu(input, output, vbr, abr, vf, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks, gpuProgress);
+            if (!ok) throw new Error(`GPU ${codecLabel(codec)} correction failed. Try another codec or CPU mode.`);
+            continue;
+          }
+        }
         return finishOutput(output, targetBytes, usePadding, expectedOutputSize, tolerance);
       }
 
