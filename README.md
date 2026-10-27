@@ -11,7 +11,13 @@ A portable Electron app that compresses any video down to a **target file size i
 > GPU codec support still depends on the hardware: AV1 NVENC requires RTX 40-series or newer; GTX 10xx / GTX 16xx use H.264 or H.265.
 
 <p align="center">
-  <img src="https://i.imgur.com/PY8Zhzh.png" alt="Preview" width="1000">
+  <img src="https://i.imgur.com/qpCuc8A.png" alt="Preview" width="1000">
+</p>
+
+## Recommended Quality Settings (H.265 if AV1 is unavailable)
+
+<p align="center">
+  <img src="https://i.imgur.com/Dq5nOgB.png" alt="Preview" width="1000">
 </p>
 
 ## What it does
