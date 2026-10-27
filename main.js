@@ -1411,14 +1411,12 @@ async function compress(params) {
   }
 
   if (useGpu) {
-    // With padding enabled, aim at 100% of the target: the encoder is
-    // measured accurate to ±1%, so a 100%-aim lands at 99-101% — 99% means
-    // a sliver of padding and NO retry (fast path), 101% a single rare
-    // downward retry. Aiming at 97% (safety) GUARANTEED a ~3% undershoot,
-    // which forced the quality-fill retry on every single compression —
-    // that was the measurable slowdown. Without padding, keep the safety
-    // margin: overshoot there is a hard failure.
-    let vbr = calcBitrate(targetMb, duration, bitrateAudioKbps, usePadding ? 1.0 : profile.gpuSafety);
+    // ORIGINAL behavior: always aim with the quality-bias safety margin.
+    // Padding's only job is to top the file up afterwards — it does not
+    // participate in bitrate math. (The 100%-aim experiment made small
+    // overshoots 50/50 coin flips: half the runs needed a downward retry,
+    // which was slower than the padding it tried to save.)
+    let vbr = calcBitrate(targetMb, duration, bitrateAudioKbps, profile.gpuSafety);
     sendLog(`Resolution      : ${keepOriginalResolution ? 'original' : resolution}`);
     sendLog(`Duration        : ${duration.toFixed(1)} sec${clipDuration ? ` (clip ${formatSeconds(clipStart)}-${formatSeconds(clipEnd)})` : ''}`);
     sendLog(`Target size     : ${targetMb} MB (${targetBytes} bytes max)`);
@@ -1482,22 +1480,8 @@ async function compress(params) {
       const fit = outputFitStatus(curBytes, targetBytes, tolerance);
 
       if (fit.ok) {
-        // Significant undershoot + padding enabled: those bytes would be
-        // zero-filled. One quick GPU retry at a higher bitrate converts
-        // them into real quality — worth ~seconds on typical clips. Only
-        // when the leftover exceeds 2% of the target (small gaps pad fine).
-        if (usePadding && fit.direction !== 'over' && curBytes < targetBytes * 0.98 && iteration < 2) {
-          const retryScale = targetBytes / Math.max(1, curBytes - abr * 1000 * duration / 8 / 1024);
-          const retryVbr = Math.max(Math.floor(vbr * Math.min(retryScale, 1.15)), 1);
-          if (retryVbr > vbr * 1.02) {
-            sendLog(`  -> ${((targetBytes - curBytes) / 1048576).toFixed(2)} MB short of target: retrying at ${retryVbr} kbps for more quality`);
-            previousBytes = curBytes;
-            vbr = retryVbr;
-            ok = await encodeGpu(input, output, vbr, abr, vf, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks, gpuProgress);
-            if (!ok) throw new Error(`GPU ${codecLabel(codec)} correction failed. Try another codec or CPU mode.`);
-            continue;
-          }
-        }
+        // ORIGINAL behavior: undershoot is a success — padding tops the
+        // file up silently in finishOutput. No quality-fill retries.
         return finishOutput(output, targetBytes, usePadding, expectedOutputSize, tolerance);
       }
 
@@ -1524,7 +1508,19 @@ async function compress(params) {
       if (fit.direction === 'over' && (stalledGpuCorrections >= 2 || vbr <= 30)) {
         break;
       }
-      const safety = fit.direction === 'under' ? 1.02 : improvement > 0 && improvement < 0.01 ? 0.62 : curBytes > targetBytes * 1.15 ? 0.76 : 0.92;
+      // Retry scaling, proportional to the miss size. The old flat 0.92
+      // safety on ANY overshoot was a sledgehammer: a 0.85% overshoot got
+      // an 8.7% bitrate cut, which guaranteed a big undershoot next pass
+      // (padding-on runs took THREE encodes instead of one). The encoder
+      // is measured accurate to ±1%, so small overshoots need exactly the
+      // proportional correction — nothing more. Big misses (>8%) keep a
+      // safety margin: there the encoder is misbehaving, not scattering.
+      const overshootRatio = curBytes / targetBytes;
+      const safety = fit.direction === 'under'
+        ? 1.02
+        : overshootRatio > 1.08 ? 0.92
+        : overshootRatio > 1.02 ? 0.98
+        : 0.995; // micro-overshoot (padding case): proportional minus a hair
       const scale = (targetBytes / curBytes) * safety;
       let nextVbr = Math.max(Math.floor(vbr * scale), 1);
       if (fit.direction === 'over' && nextVbr >= vbr) nextVbr = Math.max(vbr - 50, 1);
