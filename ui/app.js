@@ -13,6 +13,9 @@ class VCompress {
         // for the old job to fully unwind before a new start is allowed.
         this.activeCompressionPromise = null;
         this.isCancelling = false;
+        // Chain that fully unwinds a cancelled job in the background; a new
+        // start during this window queues on it instead of being rejected.
+        this.cancelUnwindPromise = null;
         this.pendingOpenFile = window.pendingOpenFile || null;
         this.lastLoggedFFmpegPath = null;
         this.lastLoggedFilePath = null;
@@ -1856,10 +1859,30 @@ class VCompress {
     }
 
     async startCompression(useClip = false) {
-        if (!this.canUseBackend() || this.isProcessing || this.isCancelling || !this.currentFile) return;
+        if (!this.canUseBackend() || this.isProcessing || !this.currentFile) return;
         if (useClip && (!this.clipDuration || this.clipEnd <= this.clipStart)) {
             this.log('ERROR: Select a valid clip range first', 'error');
             return;
+        }
+        // If a cancel is still unwinding the previous job in the background,
+        // QUEUE this start: show progress right away and wait for the old
+        // ffmpeg to die (typically <2s) instead of bouncing the user with
+        // "Already processing". The unwind chain ends with isCancelling=false.
+        if (this.isCancelling && this.cancelUnwindPromise) {
+            // Enter the visual progress state immediately so the click has
+            // visible feedback while we wait for the previous job's exit.
+            this.isProcessing = true;
+            this.setDoneBadge(false);
+            this.showProgressState(useClip);
+            this.setCompressSettingsLocked(true);
+            this.updateProgress(2, 'Waiting for previous job to finish...');
+            await this.cancelUnwindPromise;
+            if (!this.currentFile) { // cleared while waiting
+                this.isProcessing = false;
+                this.showButtonState();
+                this.setCompressSettingsLocked(false);
+                return;
+            }
         }
         // Claim the job SYNCHRONOUSLY, before any await: a Cancel click
         // landing during the path-reservation stage below used to see
@@ -2014,19 +2037,21 @@ class VCompress {
         this.setShowFolderFlash(false);
         this.resetProgress();
         this.log('Compression cancelled by user', 'warning');
-        // 2. Fire the backend kill and await full unwind in the background:
-        //    isCancelling stays true until the old job is provably dead, so
-        //    a quick restart still can't overlap two encodes — but the
-        //    button is already responsive.
-        try {
-            if (window.pywebview) {
-                await window.pywebview.api.cancel_compression();
+        // 2. Fire the backend kill and await full unwind in the background.
+        //    startCompression(), if clicked during this window, ALSO waits
+        //    on this same chain — so a restart is queued, not rejected.
+        const unwind = (async () => {
+            try {
+                if (window.pywebview) {
+                    await window.pywebview.api.cancel_compression();
+                }
+            } catch { /* backend may already be done */ }
+            if (this.activeCompressionPromise) {
+                try { await this.activeCompressionPromise; } catch { /* handled by its owner */ }
             }
-        } catch { /* backend may already be done */ }
-        if (this.activeCompressionPromise) {
-            try { await this.activeCompressionPromise; } catch { /* handled by its owner */ }
-        }
-        this.isCancelling = false;
+            this.isCancelling = false;
+        })();
+        this.cancelUnwindPromise = unwind;
     }
 
     setDoneBadge(visible) {
