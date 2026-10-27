@@ -102,7 +102,15 @@ function probeNvencCodecs() {
     let stderr = '';
     child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
     child.on('error', () => resolve({ codec, ok: false, reason: 'spawn failed' }));
-    child.on('close', (code) => resolve({ codec, ok: code === 0, reason: code === 0 ? '' : (stderr.trim().split(/\r?\n/).pop() || `exit ${code}`).slice(0, 160) }));
+    child.on('close', (code) => resolve({
+      codec,
+      ok: code === 0,
+      // Keep the FIRST meaningful error lines, not the last: the null muxer's
+      // "Nothing was written into output file" is a downstream symptom that
+      // hides the REAL cause (NVENC init failure — typically a driver/runtime
+      // version mismatch on older GPUs with a recent ffmpeg build).
+      reason: code === 0 ? '' : summarizeProbeError(stderr, code)
+    }));
   }))).then((results) => {
     const map = {};
     for (const r of results) map[r.codec] = r;
@@ -110,6 +118,19 @@ function probeNvencCodecs() {
     const anyOk = results.some((r) => r.ok);
     return { supported: anyOk, codecs: map };
   });
+}
+
+// Extract the actionable error from ffmpeg probe output: skip null-muxer
+// noise and template lines, keep the first 2 lines that mention an actual
+// failure (open/init/driver/load messages), capped for the log.
+function summarizeProbeError(stderr, code) {
+  const lines = stderr.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const meaningful = lines.filter((l) =>
+    !/Nothing was written into output file/i.test(l) &&
+    !/^\[out#0\/null/.test(l)
+  );
+  const picked = (meaningful.length ? meaningful : lines).slice(0, 2);
+  return (picked.join(' | ') || `exit code ${code}`).slice(0, 240);
 }
 
 // Legacy single boolean probe kept for compatibility: true iff h264 works.
