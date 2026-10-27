@@ -7,24 +7,7 @@
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <!-- Custom Title Bar -->
-    <div class="title-bar">
-        <div class="title-bar-drag">
-            <span class="app-title">VCompress</span>
-        </div>
-        <div class="title-bar-controls">
-            <button class="title-btn minimize-btn" id="minimizeBtn">
-                <svg width="12" height="12" viewBox="0 0 12 12">
-                    <rect x="0" y="5" width="12" height="2" fill="currentColor"/>
-                </svg>
-            </button>
-            <button class="title-btn close-btn" id="closeBtn">
-                <svg width="12" height="12" viewBox="0 0 12 12">
-                    <path d="M1 1L11 11M11 1L1 11" stroke="currentColor" stroke-width="1.5"/>
-                </svg>
-            </button>
-        </div>
-    </div>
+    <!-- Title bar is drawn by Windows itself (native frame) — no custom markup. -->
 
     <!-- Main Container -->
     <div class="app-container">
@@ -296,10 +279,9 @@
                                     <div class="setting-row">
                                         <div class="setting-info">
                                             <div class="setting-name">Quality Bias</div>
-                                            <div class="setting-description keep-description" id="qualityBiasDescription">Normal quality and speed</div>
                                         </div>
                                         <select id="qualityBias" class="select-field setting-select">
-                                            <option value="smaller">Smaller Size</option>
+                                            <option value="smaller">Faster Encode</option>
                                             <option value="balanced" selected>Balanced</option>
                                             <option value="better">Better Quality</option>
                                         </select>
@@ -333,7 +315,6 @@
                                     <label class="setting-row clickable-setting">
                                         <div class="setting-info">
                                             <div class="setting-name">Padding</div>
-                                            <div class="setting-description keep-description">Pad output file to exact target size</div>
                                         </div>
                                         <div class="toggle-switch">
                                             <input type="checkbox" id="usePadding">
@@ -467,10 +448,9 @@
                                     <div class="setting-row">
                                         <div class="setting-info">
                                             <div class="setting-name">Quality Bias</div>
-                                            <div class="setting-description keep-description" id="defaultQualityBiasDescription">Normal quality and speed</div>
                                         </div>
                                         <select id="defaultQualityBias" class="select-field setting-select">
-                                            <option value="smaller">Smaller Size</option>
+                                            <option value="smaller">Faster Encode</option>
                                             <option value="balanced" selected>Balanced</option>
                                             <option value="better">Better Quality</option>
                                         </select>
@@ -504,7 +484,6 @@
                                     <label class="setting-row clickable-setting">
                                         <div class="setting-info">
                                             <div class="setting-name">Padding</div>
-                                            <div class="setting-description keep-description">Enabled when the app opens</div>
                                         </div>
                                         <div class="toggle-switch">
                                             <input type="checkbox" id="defaultUsePadding">
@@ -541,6 +520,15 @@
                                     <span class="toggle-slider"></span>
                                 </label>
                             </div>
+                            <label class="setting-row clickable-setting">
+                                <div class="setting-info">
+                                    <div class="setting-name">Overwrite Output</div>
+                                </div>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="defaultOverwriteOutput">
+                                    <span class="toggle-slider"></span>
+                                </div>
+                            </label>
                         </div>
                     </div>
                 </div>

@@ -9,6 +9,10 @@ class VCompress {
         this.backendReady = false;
         this.ffmpegReady = false;
         this.compressionRunId = 0;
+        // Concurrency guards: one compression job at a time; cancel waits
+        // for the old job to fully unwind before a new start is allowed.
+        this.activeCompressionPromise = null;
+        this.isCancelling = false;
         this.pendingOpenFile = window.pendingOpenFile || null;
         this.lastLoggedFFmpegPath = null;
         this.lastLoggedFilePath = null;
@@ -53,9 +57,7 @@ class VCompress {
     initElements() {
         this.navItems = document.querySelectorAll('.nav-item');
         this.pages = document.querySelectorAll('.page');
-        this.minimizeBtn = document.getElementById('minimizeBtn');
-        this.maximizeBtn = document.getElementById('maximizeBtn');
-        this.closeBtn = document.getElementById('closeBtn');
+        // Window controls are native caption buttons now — no custom elements.
         this.compressPage = document.getElementById('compressPage');
         this.dropZone = document.getElementById('dropZone');
         this.fileInfoCard = document.getElementById('fileInfoCard');
@@ -93,6 +95,7 @@ class VCompress {
         this.defaultAudioMode = document.getElementById('defaultAudioMode');
         this.defaultMatchSourceFps = document.getElementById('defaultMatchSourceFps');
         this.defaultUsePadding = document.getElementById('defaultUsePadding');
+        this.defaultOverwriteOutput = document.getElementById('defaultOverwriteOutput');
         this.defaultToleranceEnabled = document.getElementById('defaultToleranceEnabled');
         this.defaultToleranceControls = document.getElementById('defaultToleranceControls');
         this.defaultToleranceMinus = document.getElementById('defaultToleranceMinus');
@@ -137,7 +140,6 @@ class VCompress {
         this.logContainer = document.getElementById('logContainer');
         this.copyLogsBtn = document.getElementById('copyLogsBtn');
         this.ffmpegStatus = document.getElementById('ffmpegStatus');
-        this.titleBar = document.querySelector('.title-bar');
         this.lastFFmpegStatus = window.pendingFFmpegStatus || null;
     }
 
@@ -146,10 +148,8 @@ class VCompress {
             item.addEventListener('click', () => this.switchPage(item.dataset.page));
         });
 
-        this.minimizeBtn?.addEventListener('click', () => this.minimizeWindow());
-        this.maximizeBtn?.addEventListener('click', () => this.maximizeWindow());
-        this.closeBtn?.addEventListener('click', () => this.closeWindow());
-        this.initWindowDrag();
+        // Window controls are native now (Electron titleBarOverlay): no custom
+        // minimize/close buttons or drag IPC — the bar itself is the drag region.
         this.dropZone.addEventListener('click', () => { if (this.canUseBackend()) this.browseInputFile(); });
         this.dropZone.addEventListener('dragover', (e) => this.handleDragOver(e));
         this.dropZone.addEventListener('dragleave', (e) => this.handleDragLeave(e));
@@ -241,7 +241,9 @@ class VCompress {
         });
         window.addEventListener('resize', () => this.closeToleranceMenu());
         this.clipVideo?.addEventListener('loadedmetadata', () => {
-            if (!this.isLoadingPreviewProxy && !this.isLoadingPreviewSegment && !this.usingClipPreviewSegment) this.resetClipRange();
+            if (!this.isLoadingPreviewProxy && !this.isLoadingPreviewSegment && !this.usingClipPreviewSegment) {
+                this.resetClipRange();
+            }
             this.forceClipVideoRepaint();
         });
         this.clipVideo?.addEventListener('loadeddata', () => this.forceClipVideoRepaint());
@@ -368,6 +370,7 @@ class VCompress {
             this.defaultAudioMode,
             this.defaultMatchSourceFps,
             this.defaultUsePadding,
+            this.defaultOverwriteOutput,
             this.defaultToleranceEnabled,
             this.defaultToleranceMinus,
             this.defaultTolerancePlus,
@@ -379,55 +382,7 @@ class VCompress {
         });
     }
 
-    initWindowDrag() {
-        if (!this.titleBar) return;
-
-        let dragging = false;
-        let pending = false;
-        let nextX = 0;
-        let nextY = 0;
-
-        const sendMove = () => {
-            pending = false;
-            if (dragging && window.pywebview) {
-                window.pywebview.api.drag_window(nextX, nextY);
-            }
-        };
-
-        this.titleBar.addEventListener('mousedown', (e) => {
-            if (e.button !== 0 || e.target.closest('.title-bar-controls')) return;
-            dragging = true;
-            window.pywebview?.api.begin_window_drag(e.screenX, e.screenY);
-        });
-
-        window.addEventListener('mousemove', (e) => {
-            if (!dragging) return;
-            nextX = e.screenX;
-            nextY = e.screenY;
-            if (!pending) {
-                pending = true;
-                requestAnimationFrame(sendMove);
-            }
-        });
-
-        window.addEventListener('mouseup', () => {
-            dragging = false;
-        });
-    }
-
-    qualityBiasText(value) {
-        if (value === 'smaller') return 'Safer size, lower quality';
-        if (value === 'better') return 'Cleaner image, slower render';
-        return 'Normal quality and speed';
-    }
-
     updateQualityBiasDescriptions() {
-        if (this.qualityBiasDescription && this.qualityBias) {
-            this.qualityBiasDescription.textContent = this.qualityBiasText(this.qualityBias.value);
-        }
-        if (this.defaultQualityBiasDescription && this.defaultQualityBias) {
-            this.defaultQualityBiasDescription.textContent = this.qualityBiasText(this.defaultQualityBias.value);
-        }
     }
 
     updateAudioBitrateState() {
@@ -683,7 +638,7 @@ class VCompress {
             info.className = 'setting-info';
             const name = document.createElement('div');
             name.className = 'clip-audio-name setting-name';
-            name.textContent = track.label || `Audio ${index + 1}`;
+            name.textContent = `Track ${index + 1}: ${track.label || 'Audio'}`;
             const details = [
                 track.codec,
                 track.channels,
@@ -822,12 +777,17 @@ class VCompress {
         this.clipWorkspace.style.display = 'flex';
         this.compressClipBtn.disabled = false;
         this.setClipControlsEnabled(true);
+        // Original preview logic restored: the <video> element loads the
+        // source file directly (Chromium's own decoder). The proxy/segment/
+        // frame fallbacks below kick in on error exactly as they did before
+        // the MediaSource experiment.
         this.clipVideo.src = this.filePathToUrl(fileInfo.path);
         this.clipVideo.load();
         if (fileInfo.needs_preview_proxy) this.scheduleClipSegmentPrefetch(0, token, 120, 8);
         if (!this.clipDuration) this.clipDurationBadge.textContent = 'Loading...';
         this.updatePlayButton();
     }
+
 
     async prepareClipPreviewProxy(fileInfo, token = this.clipSourceToken, force = false) {
         if ((!force && !fileInfo?.needs_preview_proxy) || !window.pywebview?.api?.prepare_preview_proxy) return;
@@ -1290,7 +1250,7 @@ class VCompress {
     }
 
     setClipControlsEnabled(enabled) {
-        [this.frameBackBtn, this.frameForwardBtn, this.markStartBtn, this.markEndBtn, this.clipPlayBtn].forEach(el => {
+        [this.frameBackBtn, this.frameForwardBtn, this.markStartBtn, this.markEndBtn, this.clipPlayBtn, this.compressClipBtn].forEach(el => {
             if (!el || !('disabled' in el)) return;
             el.disabled = !enabled || this.isProcessing || !this.ffmpegReady;
             el.classList.toggle('is-disabled', !enabled);
@@ -1484,6 +1444,7 @@ class VCompress {
             this.defaultAudioMode,
             this.defaultMatchSourceFps,
             this.defaultUsePadding,
+            this.defaultOverwriteOutput,
             this.defaultToleranceEnabled,
             this.defaultToleranceMinus,
             this.defaultTolerancePlus,
@@ -1520,24 +1481,6 @@ class VCompress {
         this.navItems.forEach(item => item.classList.remove('active'));
         document.getElementById(`${pageId}Page`).classList.add('active');
         document.querySelector(`[data-page="${pageId}"]`).classList.add('active');
-    }
-
-    minimizeWindow() {
-        if (window.pywebview) {
-            window.pywebview.api.minimize_window();
-        }
-    }
-
-    maximizeWindow() {
-        if (window.pywebview) {
-            window.pywebview.api.maximize_window();
-        }
-    }
-
-    closeWindow() {
-        if (window.pywebview) {
-            window.pywebview.api.close_window();
-        }
     }
 
     handleDragOver(e) {
@@ -1722,7 +1665,10 @@ class VCompress {
         this.setDisplayedVideoDuration(fileInfo.duration);
 
         this.dropZone.style.display = 'none';
-        this.fileInfoCard.style.display = 'block';
+        // 'flex', not 'block': the card's vertical layout (header on top,
+        // file info centered below it) is flex-column in CSS — a 'block'
+        // inline style here silently disabled that centering.
+        this.fileInfoCard.style.display = 'flex';
         this.fileInfoCard.classList.remove('animate-in');
         void this.fileInfoCard.offsetWidth;
         this.fileInfoCard.classList.add('animate-in');
@@ -1740,6 +1686,12 @@ class VCompress {
     }
 
     clearFile() {
+        // The X button doubles as cancel: clearing the file while a compression
+        // is running must stop the encode first — otherwise the job keeps
+        // writing to an output the user just "removed".
+        if (this.isProcessing) {
+            this.cancelCompression();
+        }
         this.currentFile = null;
         this.clipSourceToken += 1;
         this.cancelPreviewProxy();
@@ -1850,6 +1802,9 @@ class VCompress {
         if (this.defaultAudioMode) this.defaultAudioMode.value = audioMode;
         if (settings.match_source_fps !== undefined) this.defaultMatchSourceFps.checked = settings.match_source_fps;
         if (settings.use_padding !== undefined) this.defaultUsePadding.checked = settings.use_padding;
+        // Off by default: duplicated outputs get " (1)", " (2)" suffixes like
+        // Windows Explorer copies (the safe behavior).
+        if (this.defaultOverwriteOutput) this.defaultOverwriteOutput.checked = Boolean(settings.overwrite_output);
         this.applyToleranceSettings(settings);
         this.updateQualityBiasDescriptions();
         this.updateAudioBitrateState();
@@ -1878,6 +1833,7 @@ class VCompress {
             match_source_fps: this.defaultMatchSourceFps.checked,
             use_gpu: this.defaultEncoderDevice.value === 'gpu',
             use_padding: this.defaultUsePadding.checked,
+            overwrite_output: this.defaultOverwriteOutput.checked,
             remove_audio: this.defaultAudioBitrate.value === 'remove',
             export_audio_only: this.defaultAudioBitrate.value === 'audio_only',
             tolerance: this.getToleranceSettings('default')
@@ -1900,17 +1856,29 @@ class VCompress {
     }
 
     async startCompression(useClip = false) {
-        if (!this.canUseBackend() || this.isProcessing || !this.currentFile) return;
+        if (!this.canUseBackend() || this.isProcessing || this.isCancelling || !this.currentFile) return;
         if (useClip && (!this.clipDuration || this.clipEnd <= this.clipStart)) {
             this.log('ERROR: Select a valid clip range first', 'error');
             return;
         }
         this.setDisplayedVideoDuration(this.currentFile.duration);
         const outputPath = this.outputPathWithSuffix(useClip ? 'compressed_clip' : 'compressed');
-        if (outputPath) this.currentFile.output_path = outputPath;
+        if (outputPath) {
+            // Overwrite Output setting: ON reuses the exact path (ffmpeg's -y
+            // replaces the previous result); OFF bumps to "name (1).mp4",
+            // "name (2).mp4"... like Explorer copying into a busy folder.
+            const overwrite = Boolean(this.defaultOverwriteOutput?.checked);
+            this.currentFile.output_path = overwrite
+                ? outputPath
+                : await window.pywebview.api.reserve_output_path(outputPath);
+            if (overwrite && await window.pywebview.api.path_exists(outputPath)) {
+                this.log(`Overwriting existing file: ${outputPath}`);
+            }
+        }
 
         this.isProcessing = true;
         const runId = ++this.compressionRunId;
+        this.setDoneBadge(false);
         this.setDoneBadge(false);
         this.showProgressState(useClip);
         this.setCompressSettingsLocked(true);
@@ -1947,7 +1915,12 @@ class VCompress {
         };
 
         try {
-            const result = await window.pywebview.api.compress_video(params);
+            // Track the in-flight backend job so cancelCompression can await
+            // its full unwind (the backend's finally releases the job lock)
+            // before a new start is allowed — no more overlapping encodes.
+            const call = window.pywebview.api.compress_video(params);
+            this.activeCompressionPromise = call;
+            const result = await call;
             if (runId !== this.compressionRunId) return;
 
             if (result.success) {
@@ -1992,6 +1965,7 @@ class VCompress {
                 this.stopTimer();
                 this.setCompressSettingsLocked(false);
             }
+            this.activeCompressionPromise = null;
         }
     }
 
@@ -2001,11 +1975,24 @@ class VCompress {
         } catch {}
     }
 
-    cancelCompression() {
-        if (window.pywebview) {
-            window.pywebview.api.cancel_compression();
-        }
+    async cancelCompression() {
+        if (!this.isProcessing && !this.activeCompressionPromise) return;
         this.compressionRunId++;
+        this.isCancelling = true;
+        this.log('Cancelling...', 'warning');
+        try {
+            if (window.pywebview) {
+                await window.pywebview.api.cancel_compression();
+            }
+        } catch { /* backend may already be done */ }
+        // The old startCompression()'s compress_video call is still in
+        // flight; its finally-block will notice the stale runId and clean
+        // up. Wait for it so a quick restart can't overlap two jobs.
+        if (this.activeCompressionPromise) {
+            try { await this.activeCompressionPromise; } catch { /* already handled by its owner */ }
+        }
+        this.activeCompressionPromise = null;
+        this.isCancelling = false;
         this.isProcessing = false;
         this.showButtonState();
         this.setCompressSettingsLocked(false);
@@ -2182,9 +2169,50 @@ class VCompress {
             statusValue.textContent = 'Not found';
             this.ffmpegReady = false;
             this.setInterfaceEnabled(false);
-            this.log(`ERROR: FFmpeg not found: ${status.path || 'unknown path'}`, 'error');
-            if (status.version) {
-                this.log(`ERROR: ${status.version}`, 'error');
+            if (this.lastLoggedFFmpegPath !== status.path) {
+                this.log(`ERROR: FFmpeg not found: ${status.path || 'unknown path'}`, 'error');
+                if (status.version) {
+                    this.log(`ERROR: ${status.version}`, 'error');
+                }
+                this.lastLoggedFFmpegPath = status.path;
+            }
+        }
+
+        this.applyNvencStatus(status.nvenc);
+    }
+
+    // status.nvenc: null = probe not finished yet, true/false after probe.
+    // When false, GPU encodes would fail mid-run on this machine, so the GPU
+    // option is disabled and CPU is selected instead.
+    applyNvencStatus(nvenc) {
+        const gpuOption = this.encoderDevice?.querySelector('option[value="gpu"]');
+        const defaultGpuOption = this.defaultEncoderDevice?.querySelector('option[value="gpu"]');
+        if (nvenc === null || nvenc === undefined) {
+            [gpuOption, defaultGpuOption].forEach(option => {
+                if (option) {
+                    option.disabled = false;
+                    option.textContent = 'GPU';
+                }
+            });
+            return;
+        }
+
+        [gpuOption, defaultGpuOption].forEach(option => {
+            if (!option) return;
+            option.disabled = !nvenc;
+            option.textContent = nvenc ? 'GPU' : 'GPU unavailable';
+        });
+
+        if (!nvenc) {
+            if (this.encoderDevice?.value === 'gpu') {
+                this.encoderDevice.value = 'cpu';
+                if (!this.switchedToCpuLogged) {
+                    this.switchedToCpuLogged = true;
+                    this.log('Switched to CPU encoding: NVENC not available on this machine', 'warning');
+                }
+            }
+            if (this.defaultEncoderDevice?.value === 'gpu') {
+                this.defaultEncoderDevice.value = 'cpu';
             }
         }
     }

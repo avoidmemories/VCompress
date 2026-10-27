@@ -24,6 +24,7 @@
       "preload.js",
       "package.json",
       "ui/**/*",
+      "build/icon.ico",
       "!ui/**/*.backup",
       "!ui/**/*.bak",
       "!ui/**/*.tmp"
@@ -32,6 +33,10 @@
       {
         "from": "ffmpeg/bin/ffmpeg.exe",
         "to": "ffmpeg/ffmpeg.exe"
+      },
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
       }
     ],
     "win": {
@@ -43,5 +48,8 @@
       "output": "dist",
       "buildResources": "build"
     }
+  },
+  "allowScripts": {
+    "electron@31.7.7": true
   }
 }

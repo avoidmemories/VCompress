@@ -66,8 +66,13 @@ video:focus-visible {
     --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.5);
     --compress-gap: 18px;
     --action-card-height: 108px;
-    --compress-button-height: 96px;
+    --compress-button-height: 72px;
     --drop-zone-height: 234px;
+    /* Action block height: Selected Video, Compress button and loading bar
+     * are all this size; two of them + a gap exactly cover the drop zone's
+     * area at the default window, so the bottom edges line up perfectly. */
+    --action-block-height: 130px;
+    --action-control-height: 104px;
 }
 
 body {
@@ -79,78 +84,10 @@ body {
     -webkit-font-smoothing: antialiased;
 }
 
-/* Custom Title Bar */
-.title-bar {
-    height: 46px;
-    min-height: 46px;
-    background: rgba(15, 16, 20, 0.95);
-    backdrop-filter: blur(20px);
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 0 16px;
-    cursor: default;
-}
-
-.title-bar-drag {
-    display: flex;
-    align-items: center;
-    gap: 0;
-    flex: 1;
-    height: 100%;
-}
-
-.app-icon {
-    width: 20px;
-    height: 20px;
-    color: var(--accent);
-}
-
-.app-title {
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text-primary);
-}
-
-.title-bar-controls {
-    display: flex;
-    gap: 8px;
-}
-
-.title-btn {
-    width: 46px;
-    height: 32px;
-    background: transparent;
-    border: none;
-    color: var(--text-secondary);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 6px;
-    transition: all 150ms ease;
-}
-
-.title-btn:hover {
-    background: rgba(255, 255, 255, 0.06);
-    color: var(--text-primary);
-}
-
-.title-btn:active {
-    background: rgba(255, 255, 255, 0.1);
-    transform: scale(0.96);
-}
-
-.close-btn:hover {
-    background: #E81123;
-    color: white;
-}
-
 /* Main Container */
 .app-container {
     display: flex;
-    height: calc(100vh - 46px);
+    height: 100vh;
     overflow: hidden;
 }
 
@@ -254,7 +191,153 @@ body {
     flex: 1;
     overflow-y: auto;
     padding: 20px 24px;
-    max-height: calc(100vh - 46px);
+    max-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Only pages whose last row must touch the window bottom (compress, clip,
+ * logs) are stretched to full height. Settings/Audio/Defaults keep normal
+ * block flow with scrolling — stretching them made the fixed cards drift
+ * apart and text misalign (the "blocks expanded" regression). */
+.content > #compressPage.active,
+.content > #clipPage.active,
+.content > #logsPage.active {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.content > #compressPage.active {
+    justify-content: flex-start;
+    gap: var(--compress-gap);
+}
+
+/* Compress page layout — the original program's geometry, restored and
+ * slightly enlarged to compensate for the native title bar's height budget.
+ * The KEY property of the original: drop zone, Selected Video card and the
+ * progress bar all occupy the SAME height (the "action slot"), so switching
+ * between empty / loaded / encoding states never moves anything below.
+ * The compress button below the slot has its own (smaller) fixed height.
+ * Everything is fixed (no flex-grow): the layout is identical at any state,
+ * extra window height simply leaves breathing room after the last row. */
+/* Compress page geometry (user spec):
+ * 1. The drop zone takes ALL leftover height (as it originally did) — from
+ *    under the top padding down to the Save Location row.
+ * 2. When a file is loaded, the drop zone's area is EXACTLY covered by
+ *    Selected Video + gap + Compress button, with all three action blocks
+ *    (selected video / compress button / loading bar) the SAME size, so the
+ *    bottom edge of the loaded layout lands exactly where the drop zone's
+ *    bottom was. Save Location and the settings row never move. */
+.content > #compressPage.active .drop-zone {
+    flex: 1;
+    min-height: 0;
+    height: auto;
+}
+
+.content > #compressPage.active .file-info-card .file-icon {
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    flex-shrink: 0;
+}
+
+.content > #compressPage.active .file-info-card .file-icon svg {
+    width: 22px;
+    height: 22px;
+}
+
+.content > #compressPage.active .file-info-card .file-name {
+    font-size: 14px;
+}
+
+.content > #compressPage.active .file-info-card .file-meta {
+    font-size: 12.5px;
+}
+
+/* Compress button and loading bar: identical size (both replace each other
+ * in the same slot); their bottom edge lands exactly where the drop zone's
+ * bottom was — Selected Video + gap + button covers the drop zone's area. */
+.content > #compressPage.active .compress-container .primary-btn {
+    height: var(--action-control-height);
+}
+
+.content > #compressPage.active .progress-card {
+    height: var(--action-control-height);
+    flex: none;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 10px 18px;
+}
+
+.content > #compressPage.active .file-info-card {
+    height: var(--action-block-height);
+    flex: none;
+    min-height: 0;
+    padding: 14px 18px 14px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.content > #compressPage.active .file-info-card .card-header {
+    margin: 0;
+    flex: none;
+    min-height: 0;
+}
+
+.content > #compressPage.active .file-info-card .file-info {
+    flex: 1;
+    min-height: 0;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 8px;
+}
+
+.content > #compressPage.active .file-info-card .file-icon {
+    width: 46px;
+    height: 46px;
+    border-radius: 12px;
+    flex-shrink: 0;
+}
+
+.content > #compressPage.active .file-info-card .file-icon svg {
+    width: 30px;
+    height: 30px;
+}
+
+.content > #compressPage.active .file-info-card .file-name {
+    font-size: 16px;
+    margin-bottom: 3px;
+}
+
+.content > #compressPage.active .file-info-card .file-meta {
+    font-size: 14px;
+}
+
+/* Logs page: the log container stretches to the window bottom. */
+.content > #logsPage.active {
+    display: flex;
+    flex-direction: column;
+}
+
+.content > #logsPage.active .log-container,
+.content > #logsPage.active .logs-card {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.log-container {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
 }
 
 .content::-webkit-scrollbar {
@@ -283,15 +366,6 @@ body {
     display: block;
 }
 
-#compressPage.active,
-#clipPage.active,
-#settingsPage.active,
-#audioPage.active,
-#defaultsPage.active {
-    min-height: calc(100vh - 86px);
-}
-
-#clipPage.active,
 #settingsPage.active,
 #audioPage.active,
 #defaultsPage.active {
@@ -302,7 +376,7 @@ body {
 
 #clipPage.active {
     gap: 0;
-    height: calc(100vh - 86px);
+    height: 100%;
     min-height: 0;
     overflow: hidden;
 }
@@ -321,11 +395,11 @@ body {
 }
 
 .output-settings-card {
-    padding: 18px 22px;
+    padding: 12px 22px;
 }
 
 .output-settings-card .card-header {
-    margin-bottom: 10px;
+    margin-bottom: 8px;
 }
 
 .output-title {
@@ -334,7 +408,7 @@ body {
 }
 
 #logsPage.active {
-    min-height: calc(100vh - 86px);
+    min-height: 0;
 }
 
 .clip-card {
@@ -415,7 +489,9 @@ body {
     flex: 1 1 auto;
     min-height: 0;
     height: auto;
-    max-height: calc(100vh - 168px);
+    /* no max-height: the frame is the flexible element of the clip page —
+     * it fills everything between the header and the timeline, so the
+     * timeline + controls sit near the window bottom at any window size. */
     background: #050608;
     border-radius: 14px;
     overflow: hidden;
@@ -1243,7 +1319,7 @@ body {
 }
 
 .compact-settings-card {
-    padding: 14px 18px;
+    padding: 12px 18px;
     margin-bottom: 0;
 }
 
@@ -1436,9 +1512,21 @@ input[type="number"] {
     gap: 8px;
 }
 
-.secondary-btn:hover {
+.secondary-btn:hover:not(:disabled) {
     background: rgba(255, 255, 255, 0.08);
     border-color: rgba(255, 255, 255, 0.15);
+}
+
+.secondary-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    transform: none;
+}
+
+button.is-disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    pointer-events: none;
 }
 
 .secondary-btn:active {
@@ -1485,12 +1573,10 @@ input[type="number"] {
     flex-shrink: 0;
 }
 
-/* Progress Card */
+/* Progress Card — height/padding governed by the compress-page action block
+ * rules above; this only carries the intro animation and internal layout. */
 .progress-card {
     animation: slideIn 300ms ease;
-    height: var(--compress-button-height);
-    padding: 14px 20px !important;
-    margin-bottom: 0 !important;
     display: flex;
     flex-direction: column;
     justify-content: center;
@@ -1661,6 +1747,24 @@ input[type="number"] {
 
 .compact-settings-list .setting-row {
     gap: 14px;
+    /* Uniform row height: select rows are ~45px tall, toggle rows only 42 —
+     * equalize so all functions sit at the same vertical rhythm regardless
+     * of their control type. Fixed height (not just min) keeps both grid
+     * columns stepping in lockstep, so left and right labels align. */
+    height: 45px;
+    min-height: 45px;
+    align-items: center;
+}
+
+/* clickable-setting rows (toggles) carry a -4px vertical margin that eats
+ * into the 18px list gap, making the right column's rows step at 55px
+ * while the left (select) column steps at 63px — labels never aligned
+ * across columns. Zero the vertical part inside these lists. */
+.compact-settings-list .setting-row.clickable-setting {
+    margin-left: -10px;
+    margin-right: -10px;
+    margin-top: 0;
+    margin-bottom: 0;
 }
 
 .compact-settings-list .setting-name {
@@ -1681,12 +1785,33 @@ input[type="number"] {
 }
 
 .compact-settings-list .setting-select {
-    width: 132px;
-    flex-basis: 132px;
+    width: 158px;
+    flex-basis: 158px;
 }
 
 .tolerance-panel {
     padding: 2px 16px 0;
+    /* Rows inside this panel (Size Tolerance, Overwrite Output) share the
+     * settings lists' rhythm: 18px gaps and the same uniform 45px row
+     * height (the tolerance row's inline inputs otherwise make it 52). */
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+}
+
+.tolerance-panel .setting-row {
+    min-height: 45px;
+    align-items: center;
+}
+
+/* The tolerance row carries its own 38px inputs; the default 8px vertical
+ * padding of clickable rows would push it to ~54px. Trim it so the row
+ * lands at the same 45px as every other settings row. */
+.tolerance-panel .tolerance-inline-row {
+    padding: 3px 10px;
+    height: 45px;
+    box-sizing: border-box;
+    overflow: visible;
 }
 
 .tolerance-inline-row {
@@ -1787,11 +1912,14 @@ input[type="number"] {
 
 .tolerance-select {
     width: 116px;
-    height: 36px;
+    height: 38px;
     padding: 0 34px 0 10px;
     font-size: 13px;
     font-weight: 500;
     color: var(--text-primary);
+    /* match .input-field's effective height so the tolerance row stays at
+     * the uniform 45px like every other settings row */
+    box-sizing: border-box;
 }
 
 .tolerance-picker {
@@ -1801,6 +1929,9 @@ input[type="number"] {
 
 .tolerance-picker .tolerance-select {
     width: 100%;
+    height: 38px;
+    padding: 0 34px 0 10px;
+    box-sizing: border-box;
 }
 
 .tolerance-arrow {
@@ -1929,7 +2060,8 @@ input[type="number"] {
 /* Logs Card */
 .logs-card {
     width: 100%;
-    height: calc(100vh - 94px);
+    flex: 1;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     margin-bottom: 0;
@@ -1937,6 +2069,7 @@ input[type="number"] {
 
 .log-container {
     flex: 1;
+    min-height: 0;
     background: rgba(0, 0, 0, 0.3);
     border-radius: 12px;
     padding: 16px;

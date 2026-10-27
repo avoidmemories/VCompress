@@ -10,8 +10,10 @@ A portable Electron app that compresses any video down to a **target file size i
 
 - Compresses video to an exact target size, not just a quality level
 - GPU encode via NVENC or CPU 2-pass encode, three codecs each
+- **Fast GPU path**: a short probe run measures the encoder's real bitrate accuracy before the full encode, so the first attempt usually lands on target — no wasted retries
 - Clips a segment with a timeline before compressing
-- Picks audio tracks, removes or keeps original sound, exports audio-only
+- Picks audio tracks (named — e.g. game sound vs microphone), removes or keeps original sound, exports audio-only
+- Handles glitchy DVR/Game-Bar recordings gracefully: warns in the log instead of silently producing garbage
 - Shows detailed logs and a final size report
 
 ## Interface tour
@@ -53,17 +55,21 @@ Fine-grained encoding options for the current run. These are applied to the next
 
 Startup defaults for new files. Changes here are saved to `compressor_settings.json` and used the next time the app opens — while Settings applies only to the current run.
 
+Includes **Overwrite Output**: off (default) — re-compressing the same video produces `name (1).mp4`, `name (2).mp4`… like Explorer copies; on — replaces the previous result in place.
+
 ### Audio tab
 
-Pick which source audio tracks go into the output. Useful for files with multiple language or comment tracks — uncheck what you don't need.
+Pick which source audio tracks go into the output. Tracks carry their real names from the file metadata (e.g. `System sounds` / `Microphone` for NVIDIA App recordings), so you always know what you're keeping. Uncheck what you don't need.
 
 ### Logs tab
 
-Everything the encoder says: detected duration, bitrate, retries, final size and full FFmpeg output. `Copy Logs` copies it for bug reports.
+Everything the encoder says: detected duration, bitrate, probes, retries, final size and full FFmpeg output. `Copy Logs` copies it for bug reports.
 
 ## Build & run
 
 Two ways to use it:
+
+**Portable (recommended)** — download the release archive, unpack anywhere and run `VCompress.exe`. FFmpeg is bundled, nothing else is needed.
 
 **From source** — needs Node.js:
 
@@ -73,16 +79,33 @@ run.bat      :: visible console
 run_hidden.vbs :: no console window
 ```
 
-**Portable build** — already compiled `VCompress.exe` in `VCompress-Portable`, just drop a `ffmpeg.exe` next to it (or it ships one under `resources/`).
+Build a portable release yourself:
+
+```bat
+npm run build:win
+node_modulesceditincedit-x64.exe dist/win-unpacked/VCompress.exe --set-icon build/icon.ico
+```
+
+(The second line embeds the app icon into the .exe so Explorer shows it —
+electron-builder's own icon step is disabled to avoid its winCodeSign
+download.)
+
+The output lands in `dist/` (an unpacked portable folder with `VCompress.exe`).
 
 ## Requirements
 
 - Windows 10/11
-- Node.js (setup.bat installs it via winget if missing)
-- FFmpeg binary — put `ffmpeg.exe` into `ffmpeg/bin/` for source, or into `resources/ffmpeg/` for the portable build. Static Windows builds are available on gyan.dev or gpl/ffmpeg.org mirrors.
+- Node.js (setup.bat installs it via winget if missing) — only for running from source
+- FFmpeg binary — bundled in the release; for source builds put `ffmpeg.exe` into `ffmpeg/bin/`. Static Windows builds from [BtbN](https://github.com/BtbN/FFmpeg-Builds/releases) or [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) work (the BtbN build is recommended — it includes SVT-AV1 for fast CPU AV1 encoding).
 
 ## Notes
 
 - For Discord's ~20 MB limit, pick `Size = 20` and `Audio = 96 kbps` — the app handles the bitrate math and retries until it fits the size tolerance.
 - AV1 needs a recent GPU (or `libsvtav1` on CPU) — H.265 is a safer pick if you're not sure.
 - Output never exceeds your target size: if the first encode lands over the limit, the app recalculates bitrate and re-encodes automatically.
+- Hardware encoders have a minimum bitrate floor (~0.5 Mbps at 1080p). If your target is very small for a long video, the app warns you in the log before encoding and suggests lowering the resolution or trimming the video.
+- Very aggressive targets on damaged recordings (NVIDIA App/ShadowPlay glitches) are detected and reported in the log — trim the broken part in the Clip tab for a clean result.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

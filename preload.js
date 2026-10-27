@@ -4,6 +4,7 @@ const api = {
   get_ffmpeg_status: () => ipcRenderer.invoke('get-ffmpeg-status'),
   getFfmpegStatus: () => ipcRenderer.invoke('get-ffmpeg-status'),
   getFFmpegStatus: () => ipcRenderer.invoke('get-ffmpeg-status'),
+  get_nvenc_status: () => ipcRenderer.invoke('get-nvenc-status'),
   get_startup_file: () => ipcRenderer.invoke('get-startup-file'),
   load_file: (filePath) => ipcRenderer.invoke('load-file', filePath),
   prepare_preview_proxy: (filePath) => ipcRenderer.invoke('prepare-preview-proxy', filePath),
@@ -18,11 +19,8 @@ const api = {
   show_in_folder: (filePath) => ipcRenderer.invoke('show-in-folder', filePath),
   load_settings: () => ipcRenderer.invoke('load-settings'),
   save_settings: (settings) => ipcRenderer.invoke('save-settings', settings),
-  minimize_window: () => ipcRenderer.invoke('minimize-window'),
-  maximize_window: () => ipcRenderer.invoke('maximize-window'),
-  close_window: () => ipcRenderer.invoke('close-window'),
-  begin_window_drag: (screenX, screenY) => ipcRenderer.invoke('begin-window-drag', screenX, screenY),
-  drag_window: (screenX, screenY) => ipcRenderer.invoke('drag-window', screenX, screenY),
+  path_exists: (targetPath) => ipcRenderer.invoke('path-exists', targetPath),
+  reserve_output_path: (targetPath) => ipcRenderer.invoke('reserve-output-path', targetPath),
   get_dropped_file_path: (file) => {
     if (!file) return null;
     if (typeof webUtils?.getPathForFile === 'function') {

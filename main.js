@@ -1,4 +1,4 @@
-﻿const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+﻿const { app, BrowserWindow, dialog, ipcMain, shell, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -17,6 +17,7 @@ let currentOutputPath = null;
 let currentPassLog = null;
 let dragOffset = { x: 0, y: 0 };
 let pendingOpenFile = getOpenFileArg();
+
 
 function getPortableDir() {
   return app.isPackaged ? path.dirname(process.execPath) : appDir;
@@ -60,6 +61,7 @@ function resolveFFmpeg() {
 }
 
 let FFMPEG = resolveFFmpeg();
+let NVENC_AVAILABLE = null; // null = not probed yet, true/false after probe
 
 function isMediaFile(filePath) {
   if (!filePath || typeof filePath !== 'string') return false;
@@ -70,12 +72,44 @@ function getOpenFileArg(argv = process.argv) {
   return argv.find((arg) => isMediaFile(arg)) || null;
 }
 
+// One-shot NVENC capability probe (~200ms): encode 0.1s of black to h264_nvenc.
+// Result is cached for the app's lifetime and surfaced to the UI so the GPU
+// option can be disabled on machines without an NVIDIA GPU instead of failing
+// mid-compress.
+function probeNvencSupport() {
+  return new Promise((resolve) => {
+    const child = spawn(FFMPEG, [
+      '-hide_banner', '-loglevel', 'error',
+      // 145x145: NVENC rejects frame dimensions below ~149 px; a probe
+      // smaller than that fails with "invalid param" even on capable GPUs.
+      '-f', 'lavfi', '-i', 'nullsrc=s=256x256:d=0.1',
+      '-c:v', 'h264_nvenc', '-f', 'null', '-'
+    ], { windowsHide: true, stdio: ['ignore', 'ignore', 'ignore'] });
+    child.on('error', () => resolve(false));
+    child.on('close', (code) => resolve(code === 0));
+  });
+}
+
 function ffmpegStatus() {
   FFMPEG = resolveFFmpeg();
-  if (FFMPEG === 'ffmpeg' || fs.existsSync(FFMPEG)) {
-    return { found: true, path: FFMPEG, version: 'Ready' };
+  // 'ffmpeg' as a bare name is a PATH fallback, not a found binary —
+  // verify it actually launches before reporting Ready, otherwise the app
+  // shows "Ready" on machines with no ffmpeg anywhere and every encode
+  // (and the NVENC probe) fails confusingly.
+  let found = false;
+  let version = 'FFmpeg executable not found. Put ffmpeg.exe into ffmpeg/bin/ next to the app.';
+  if (FFMPEG !== 'ffmpeg') {
+    found = fs.existsSync(FFMPEG);
+    if (!found) version = `Resolved path does not exist: ${FFMPEG}`;
+  } else {
+    const probe = spawnSync(FFMPEG, ['-version'], { encoding: 'utf8', windowsHide: true, timeout: 5000 });
+    found = probe.status === 0 && !probe.error;
+    if (found) {
+      const line = (probe.stdout || '').split(/\r?\n/)[0] || '';
+      version = line.includes('ffmpeg') ? line : 'Ready';
+    }
   }
-  return { found: false, path: FFMPEG || 'Not found', version: 'Resolved path does not exist' };
+  return { found, path: FFMPEG, version, nvenc: NVENC_AVAILABLE };
 }
 
 function sendLog(message, type = 'info') {
@@ -105,7 +139,7 @@ function playErrorSound() {
   playSystemSound('Windows Error.wav');
 }
 
-function runFFmpeg(args, onData) {
+function runFFmpeg(args, onData, progressContext = null) {
   return new Promise((resolve, reject) => {
     if (cancelRequested) {
       reject(new Error('Cancelled'));
@@ -113,15 +147,33 @@ function runFFmpeg(args, onData) {
     }
 
     let stderr = '';
+    let stderrTail = '';
+    let lastProgressSent = 0;
     currentProcess = spawn(FFMPEG, args, {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe']
     });
 
+    const progress = progressContext ? normalizeProgressContext(progressContext) : null;
+
     currentProcess.stderr.on('data', (chunk) => {
       const text = chunk.toString();
       stderr += text;
+      stderrTail = (stderrTail + text).slice(-2000);
       onData?.(text);
+
+      if (progress) {
+        // ffmpeg's progress lines come as \r-separated updates in one stream;
+        // parse the tail so a line split across chunk boundaries still works.
+        const now = Date.now();
+        if (now - lastProgressSent >= 250) {
+          const update = parseFfmpegProgress(stderrTail, progress);
+          if (update) {
+            lastProgressSent = now;
+            reportFfmpegProgress(update, progress);
+          }
+        }
+      }
     });
 
     currentProcess.on('error', reject);
@@ -138,6 +190,70 @@ function runFFmpeg(args, onData) {
   });
 }
 
+// progressContext: { fromPercent, toPercent, duration, label }
+// so a 2-pass encode maps pass 1 to 0-50% and pass 2 to 50-100%.
+function normalizeProgressContext(ctx) {
+  const from = Number(ctx.fromPercent);
+  const to = Number(ctx.toPercent);
+  const duration = Number(ctx.duration);
+  return {
+    fromPercent: Number.isFinite(from) ? Math.max(0, from) : 0,
+    toPercent: Number.isFinite(to) ? Math.max(0, to) : 100,
+    duration: Number.isFinite(duration) && duration > 0 ? duration : 0,
+    label: ctx.label || 'Encoding',
+    startMs: Date.now()
+  };
+}
+
+function parseFfmpegProgress(tail, progress) {
+  if (!progress.duration) return null;
+  // ffmpeg writes progress as \r-separated updates; only the newest complete
+  // line is current. Scan segments from the end and take the first that has a
+  // time= value — this skips a trailing partial line cut at a chunk boundary
+  // and a trailing empty segment after the final \r.
+  const segments = tail.split(/[\r\n]+/);
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const segment = segments[i];
+    const timeMatch = segment.match(/time=\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+    if (!timeMatch) continue;
+    const seconds = Number(timeMatch[1]) * 3600 + Number(timeMatch[2]) * 60 + Number(timeMatch[3]);
+    if (!Number.isFinite(seconds) || seconds < 0) return null;
+    let speed = null;
+    const speedMatch = segment.match(/speed=\s*([\d.]+)x/);
+    if (speedMatch) {
+      const parsed = Number(speedMatch[1]);
+      if (Number.isFinite(parsed) && parsed > 0) speed = parsed;
+    }
+    return { seconds, speed };
+  }
+  return null;
+}
+
+function reportFfmpegProgress(update, progress) {
+  const fraction = Math.max(0, Math.min(1, update.seconds / progress.duration));
+  const percent = Math.round(progress.fromPercent + (progress.toPercent - progress.fromPercent) * fraction);
+  let status = `${progress.label}: ${formatSeconds(Math.min(update.seconds, progress.duration))} / ${formatSeconds(progress.duration)}`;
+  if (update.speed) {
+    const elapsed = (Date.now() - progress.startMs) / 1000;
+    const done = Math.min(update.seconds, progress.duration);
+    const eta = Math.max(0, (progress.duration - done) / update.speed);
+    if (elapsed >= 3 && eta >= 5) {
+      status += ` (${update.speed.toFixed(2)}x, ~${formatEta(eta)} left)`;
+    } else {
+      status += ` (${update.speed.toFixed(2)}x)`;
+    }
+  }
+  sendProgress(percent, status);
+}
+
+function formatEta(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  if (total < 60) return `${total}s`;
+  const minutes = Math.floor(total / 60);
+  const secs = total % 60;
+  return secs ? `${minutes}m ${secs}s` : `${minutes}m`;
+}
+
 function getDuration(filePath) {
   const text = getMediaInfoText(filePath);
   return parseDurationFromText(text);
@@ -150,13 +266,55 @@ function parseDurationFromText(text) {
   return Number(h) * 3600 + Number(m) * 60 + Number(s);
 }
 
+// Media-info cache: probing a file spawns ffmpeg (up to ~1s for big files),
+// and compress() used to probe the same input up to 3 times in a row.
+// Keyed by path + size + mtime, so edits to the file invalidate naturally.
+const mediaInfoCache = new Map();
+
+function getMediaInfoCacheKey(filePath) {
+  try {
+    const stat = fs.statSync(filePath);
+    return `${path.resolve(filePath)}|${stat.size}|${stat.mtimeMs}`;
+  } catch {
+    return null;
+  }
+}
+
 function getMediaInfoText(filePath) {
+  const key = getMediaInfoCacheKey(filePath);
+  if (!key) return '';
+  const cached = mediaInfoCache.get(key);
+  if (cached !== undefined) return cached;
   const result = spawnSync(FFMPEG, ['-i', filePath], {
     encoding: 'utf8',
     windowsHide: true,
     errors: 'replace'
   });
-  return result.stderr || '';
+  const text = result.stderr || '';
+  mediaInfoCache.set(key, text);
+  return text;
+}
+
+function getMediaInfoTextAsync(filePath) {
+  const key = getMediaInfoCacheKey(filePath);
+  if (!key) return Promise.resolve('');
+  const cached = mediaInfoCache.get(key);
+  if (cached !== undefined) return Promise.resolve(cached);
+  return new Promise((resolve) => {
+    let stderr = '';
+    const child = spawn(FFMPEG, ['-i', filePath], {
+      windowsHide: true,
+      stdio: ['ignore', 'ignore', 'pipe']
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', () => resolve(''));
+    child.on('close', () => {
+      mediaInfoCache.set(key, stderr);
+      resolve(stderr);
+    });
+  });
 }
 
 function getAudioBitrate(filePath) {
@@ -183,7 +341,9 @@ function parseVideoFpsFromText(text) {
 
 function parseAudioTracksFromText(text) {
   const tracks = [];
-  for (const line of text.split(/\r?\n/)) {
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     if (!line.includes('Audio:')) continue;
     const streamMatch = line.match(/Stream #\d+:(\d+)(?:\[[^\]]+\])?(?:\(([^)]+)\))?:\s*Audio:\s*([^,\r\n]+)/i);
     if (!streamMatch) continue;
@@ -193,12 +353,25 @@ function parseAudioTracksFromText(text) {
     const sampleRateMatch = line.match(/,\s*(\d+)\s*Hz/i);
     const bitrateMatch = line.match(/,\s*(\d+)\s*kb\/s/i);
     const channelMatch = line.match(/,\s*([^,\r\n]*?(?:stereo|mono|5\.1|7\.1|quad|surround)[^,\r\n]*)/i);
-    const titleMatch = line.match(/title\s*:\s*([^\r\n]+)/i);
+    // Track names: DVR recordings (NVIDIA App/ShadowPlay) put them in the
+    // stream's metadata as "name" or "title" on the lines FOLLOWING the
+    // "Audio:" line, inside a "Metadata:" block. Look ahead up to 8 lines,
+    // stopping at the next stream.
+    let label = '';
+    for (let j = i + 1; j < Math.min(lines.length, i + 9); j++) {
+      const next = lines[j];
+      if (next.includes('Stream #')) break;
+      const nameMatch = next.match(/^\s*(?:name|title)\s*:\s*([^\r\n]+)/i);
+      if (nameMatch) {
+        label = nameMatch[1].trim();
+        break;
+      }
+    }
     tracks.push({
       id: audioIndex,
       audio_index: audioIndex,
       stream_index: Number.isFinite(streamIndex) ? streamIndex : audioIndex + 1,
-      label: titleMatch ? titleMatch[1].trim() : `Audio ${audioIndex + 1}`,
+      label: label || `Audio ${audioIndex + 1}`,
       language: languageText || '',
       codec: codecText.trim(),
       channels: channelMatch ? channelMatch[1].trim() : '',
@@ -319,6 +492,7 @@ function cancelPreviewProxy() {
   return { success: true };
 }
 
+
 function runPreviewFrame(args) {
   return new Promise((resolve, reject) => {
     if (currentPreviewFrameProcess) {
@@ -356,7 +530,7 @@ function getPreviewFrameCachePath(filePath, time) {
   const frameTime = Math.max(0, Math.round((Number(time) || 0) * 1000) / 1000);
   const key = crypto
     .createHash('sha1')
-    .update(`frame-v2-precise|${path.resolve(filePath)}|${stat.size}|${stat.mtimeMs}|${frameTime}`)
+    .update(`frame-v3-keyseek|${path.resolve(filePath)}|${stat.size}|${stat.mtimeMs}|${frameTime}`)
     .digest('hex');
   const dir = path.join(app.getPath('temp'), 'vcompress-preview-frames');
   fs.mkdirSync(dir, { recursive: true });
@@ -374,8 +548,13 @@ async function createPreviewFrame(filePath, time) {
   try {
     if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
     const targetTime = Math.max(0, Number(time) || 0);
-    const fastSeek = Math.max(0, targetTime - 2);
-    const preciseSeek = Math.max(0, targetTime - fastSeek);
+    // Input-side seek only, output-side -frames:v 1. The old pattern
+    // (fastSeek 2s early + precise output seek) made the decoder chew
+    // through 2 seconds of frames from a poisoned reference chain on
+    // damaged sources, producing a garbage frame that then got CACHED as
+    // the preview for that timestamp. A single input seek resets the
+    // decoder onto the nearest keyframe, which is what LosslessCut's frame
+    // extraction does.
     await runPreviewFrame([
       '-y',
       '-hide_banner',
@@ -383,9 +562,8 @@ async function createPreviewFrame(filePath, time) {
       '-max_error_rate', '1.0',
       '-err_detect', 'ignore_err',
       '-fflags', '+genpts+discardcorrupt',
-      '-ss', String(fastSeek),
+      '-ss', String(targetTime),
       '-i', filePath,
-      '-ss', String(preciseSeek),
       '-frames:v', '1',
       '-vf', 'scale=w=min(1280\\,iw):h=-2:force_original_aspect_ratio=decrease:force_divisible_by=2',
       '-q:v', '3',
@@ -418,7 +596,7 @@ function getPreviewSegmentCachePath(filePath, start, duration) {
   const segmentDuration = Math.max(2, Math.min(16, Number(duration) || 8));
   const key = crypto
     .createHash('sha1')
-    .update(`segment-v5-long|${path.resolve(filePath)}|${stat.size}|${stat.mtimeMs}|${segmentStart}|${segmentDuration}`)
+    .update(`segment-v6-keyseek|${path.resolve(filePath)}|${stat.size}|${stat.mtimeMs}|${segmentStart}|${segmentDuration}`)
     .digest('hex');
   const dir = path.join(app.getPath('temp'), 'vcompress-preview-segments');
   fs.mkdirSync(dir, { recursive: true });
@@ -685,11 +863,12 @@ function qualityProfile(value) {
   const bias = normalizeQualityBias(value);
   if (bias === 'smaller') {
     return {
-      name: 'Smaller Size',
+      name: 'Faster Encode',
       gpuSafety: 0.91,
       cpuSafety: 0.95,
       gpuCq: { h264: 23, h265: 25, av1: 28 },
-      cpuPreset: { h264: 'veryfast', h265: 'medium', av1: '8' }
+      cpuPreset: { h264: 'veryfast', h265: 'medium', av1: '8' },
+      gpuPreset: 'p4'
     };
   }
   if (bias === 'better') {
@@ -698,7 +877,8 @@ function qualityProfile(value) {
       gpuSafety: 0.97,
       cpuSafety: 0.99,
       gpuCq: { h264: 18, h265: 20, av1: 22 },
-      cpuPreset: { h264: 'slow', h265: 'slow', av1: '6' }
+      cpuPreset: { h264: 'slow', h265: 'slow', av1: '6' },
+      gpuPreset: 'p5'
     };
   }
   return {
@@ -706,7 +886,8 @@ function qualityProfile(value) {
     gpuSafety: 0.94,
     cpuSafety: 0.98,
     gpuCq: { h264: 20, h265: 22, av1: 24 },
-    cpuPreset: { h264: 'medium', h265: 'medium', av1: '7' }
+    cpuPreset: { h264: 'medium', h265: 'medium', av1: '7' },
+    gpuPreset: 'p4'
   };
 }
 
@@ -718,15 +899,48 @@ function gpuEncoder(codec) {
   return ({ h264: 'h264_nvenc', h265: 'hevc_nvenc', av1: 'av1_nvenc' })[codec] || 'h264_nvenc';
 }
 
+// Empirical minimum bitrate the hardware encoder will actually honor at a
+// given width (measured on this machine: av1_nvenc floors near ~640 kbps at
+// 1080p on complex content, h264 ~485 kbps; both scale roughly with pixel
+// count). Below these, -b:v is silently ignored and every retry overshoots.
+function estimateEncoderFloor(codec, width) {
+  const floorAt1080 = codec === 'av1' ? 640 : codec === 'h265' ? 400 : 485;
+  const pixelRatio = Math.max(0.25, (width * width) / (1920 * 1920));
+  return Math.round(floorAt1080 * pixelRatio);
+}
+
+// AV1 CPU encoder: libsvtav1 when the bundled ffmpeg has it (fast, the
+// intended path), libaom-av1 as a fallback (works everywhere but is much
+// slower). Probed once and cached.
+let AV1_CPU_ENCODER = null;
+
+function getAv1CpuEncoder() {
+  if (AV1_CPU_ENCODER) return AV1_CPU_ENCODER;
+  const probe = spawnSync(FFMPEG, ['-hide_banner', '-encoders'], {
+    encoding: 'utf8', windowsHide: true, timeout: 10000
+  });
+  const list = probe.stdout || '';
+  AV1_CPU_ENCODER = list.includes('libsvtav1') ? 'libsvtav1' : 'libaom-av1';
+  return AV1_CPU_ENCODER;
+}
+
 function cpuEncoder(codec) {
-  return ({ h264: 'libx264', h265: 'libx265', av1: 'libsvtav1' })[codec] || 'libx264';
+  if (codec === 'av1') return getAv1CpuEncoder();
+  return ({ h264: 'libx264', h265: 'libx265' })[codec] || 'libx264';
 }
 
 function gpuArgsForCodec(codec, vbr, profile) {
-  const common = ['-preset', 'p5', '-b:v', `${vbr}k`, '-maxrate', `${vbr}k`, '-bufsize', `${Math.floor(vbr * 1.25)}k`];
-  if (codec === 'h264') return [...common, '-tune', 'hq', '-rc:v', 'vbr_hq', '-profile:v', 'high', '-tag:v', 'avc1'];
-  if (codec === 'h265') return [...common, '-tune', 'hq', '-rc:v', 'vbr_hq', '-tag:v', 'hvc1'];
-  return ['-preset', 'p5', '-b:v', `${vbr}k`, '-maxrate', `${vbr}k`, '-bufsize', `${Math.max(vbr, 1)}k`, '-rc:v', 'cbr', '-multipass', 'qres'];
+  // Preset comes from the quality bias: p4 is NVENC's default and much
+  // faster; p5 only pays off when quality matters and the bitrate budget
+  // is not the binding constraint anyway.
+  const preset = profile?.gpuPreset || 'p4';
+  const common = ['-preset', preset, '-b:v', `${vbr}k`, '-maxrate', `${vbr}k`, '-bufsize', `${Math.floor(vbr * 1.25)}k`];
+  if (codec === 'h264') return [...common, '-tune', 'hq', '-rc', 'vbr', '-multipass', 'fullres', '-profile:v', 'high', '-tag:v', 'avc1'];
+  if (codec === 'h265') return [...common, '-tune', 'hq', '-rc', 'vbr', '-multipass', 'fullres', '-tag:v', 'hvc1'];
+  // AV1: VBR (not CBR) — a CBR budget poisoned by damaged frames at the
+  // start of the source drags quality down for everything that follows;
+  // VBR recovers immediately after the damaged section.
+  return [...common, '-rc', 'vbr', '-multipass', 'qres'];
 }
 
 function cpuArgsForCodec(codec, vbr, passLog, pass, profile) {
@@ -741,9 +955,21 @@ function cpuArgsForCodec(codec, vbr, passLog, pass, profile) {
       '-tag:v', 'hvc1'
     ];
   }
+  if (getAv1CpuEncoder() === 'libsvtav1') {
+    // SVT-AV1 >= 4.x rejects -maxrate/-bufsize alongside -b:v ("Max Bitrate
+    // only supported with CRF mode") — target size is enforced by -b:v
+    // plus 2-pass anyway, so rate limits are simply omitted here.
+    return [
+      '-c:v', 'libsvtav1', '-b:v', `${vbr}k`, '-preset', profile.cpuPreset.av1,
+      '-pass', String(pass), '-passlogfile', passLog
+    ];
+  }
+  // libaom-av1 fallback: no -preset (uses -cpu-used), no -tag:v.
+  // cpu-used 8 = fastest, 0 = slowest; mapped from quality bias.
+  const cpuUsed = profile.cpuPreset.av1 === '6' ? '4' : profile.cpuPreset.av1 === '8' ? '6' : '5';
   return [
-    '-c:v', 'libsvtav1', '-b:v', `${vbr}k`, '-preset', profile.cpuPreset.av1,
-    '-pass', String(pass), '-passlogfile', passLog
+    '-c:v', 'libaom-av1', '-b:v', `${vbr}k`, '-cpu-used', cpuUsed, '-row-mt', '1',
+    '-threads', '0', '-pass', String(pass), '-passlogfile', passLog
   ];
 }
 
@@ -771,8 +997,17 @@ function audioOnlyOutputArgs(abr, selectedAudioTracks = []) {
   ];
 }
 
+// Input flags that let ffmpeg survive damaged sources (DVR recordings with
+// broken GOPs are common): tolerate a high decode error rate, keep going
+// on corrupt packets, regenerate timestamps. Without these, ffmpeg aborts
+// when the decode error rate crosses 2/3 ("Decode error rate ... exceeds
+// maximum 0.666667").
+function resilientInputArgs() {
+  return ['-err_detect', 'ignore_err', '-max_error_rate', '1.0', '-fflags', '+genpts+discardcorrupt'];
+}
+
 function clipInputArgs(input, clipStart, clipDuration) {
-  const args = ['-y'];
+  const args = ['-y', ...resilientInputArgs()];
   const preSeek = clipStart > 0 ? Math.max(0, clipStart - 1.5) : 0;
   const fineSeek = clipStart > 0 ? clipStart - preSeek : 0;
   if (preSeek > 0) args.push('-ss', String(preSeek));
@@ -823,33 +1058,160 @@ function cleanupOutputArtifacts(output, passLog) {
   if (passLog) cleanupPassLogs(passLog);
 }
 
-async function encodeGpu(input, output, vbr, abr, vf, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks) {
+// Builds the full GPU encode pipeline. `gpuPipeline` selects decode/scale
+// placement: 'hw' runs NVDEC + scale_cuda on the GPU (no CPU frame copies);
+// 'sw' is the legacy CPU decode + CPU scale path, used as fallback when the
+// hw pipeline fails to start (unsupported codec, no CUDA device, etc).
+function gpuEncodeArgs(gpuPipeline, input, output, vbr, abr, vf, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks) {
   const encoder = gpuEncoder(codec);
-  sendLog(`GPU mode (${encoder}, ${codecLabel(codec)})...`);
+  let inputArgs;
+  let filter;
+  if (gpuPipeline === 'hw') {
+    // clipInputArgs places -ss before -i (fast seek); hwaccel flags must sit
+    // next to the input so they apply to that exact -i.
+    // '-y' first: GPU bitrate corrections re-encode to the SAME output path,
+    // and without it ffmpeg asks "Overwrite? [y/N]" interactively — which in
+    // a spawned process reads EOF and aborts, falsely looking like a pipeline
+    // failure and triggering the slow CPU-decode fallback.
+    inputArgs = ['-y', ...resilientInputArgs()];
+    const preSeek = clipStart > 0 ? Math.max(0, clipStart - 1.5) : 0;
+    if (preSeek > 0) inputArgs.push('-ss', String(preSeek));
+    inputArgs.push('-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda');
+    inputArgs.push('-i', input);
+    const fineSeek = clipStart > 0 ? clipStart - preSeek : 0;
+    if (fineSeek > 0) inputArgs.push('-ss', String(fineSeek));
+    if (clipDuration > 0) inputArgs.push('-t', String(clipDuration));
+
+    // Translate the CPU scale/fps filter to its CUDA equivalent. The fps part
+    // needs a CPU frame (CUDA fps filter does not exist), so scale on GPU,
+    // download, then fps on CPU — the expensive resize stays on the GPU.
+    // With no scale part (Keep Original) we still must hwdownload before fps.
+    const fpsPart = vf.split(',').find((part) => part.startsWith('fps='));
+    const scalePart = vf.split(',').find((part) => part.startsWith('scale='));
+    if (scalePart) {
+      filter = `${scalePart.replace(/^scale=/, 'scale_cuda=')},hwdownload,format=nv12${fpsPart ? `,${fpsPart}` : ''}`;
+    } else {
+      filter = fpsPart ? `hwdownload,format=nv12,${fpsPart}` : 'null';
+    }
+  } else {
+    inputArgs = clipInputArgs(input, clipStart, clipDuration);
+    filter = vf;
+  }
+
   const args = [
-    ...clipInputArgs(input, clipStart, clipDuration),
+    ...inputArgs,
     '-map', '0:v:0', '-sn', '-dn',
-    '-vf', vf,
+    '-vf', filter,
     '-c:v', encoder,
     ...gpuArgsForCodec(codec, vbr, profile),
-    '-pix_fmt', 'yuv420p',
     ...cleanVideoOutputMetadataArgs(),
     '-movflags', '+faststart',
     ...audioOutputArgs(abr, audioMode, selectedAudioTracks),
     output
   ];
+  return args;
+}
 
+// Encodes a short probe segment (mid-file) at the planned bitrate and returns
+// the measured overshoot/undershoot ratio, so the first full encode can start
+// with a corrected bitrate instead of relying on retry loops. Runs in the
+// normal output dir; ~seconds of work, cleaned up afterwards.
+async function probeGpuBitrate(input, vbr, vf, codec, profile, duration) {
+  // The probe pays off only when it is a small fraction of a full encode:
+  // it costs ~probeSecs of encoding to potentially save one FULL re-encode.
+  // On clips under ~60s the math is negative — a retry of a 10s clip costs
+  // the same as the probe itself — so skip probing short content entirely.
+  if (!duration || duration < 60) return null;
+  const probeSecs = Math.min(15, Math.floor(duration * 0.1));
+  if (probeSecs < 5) return null;
+  const probeStart = Math.max(0, Math.floor((duration - probeSecs) / 2));
+  const probeOutput = path.join(app.getPath('temp'), `vcompress-gpu-probe-${process.pid}.mp4`);
+  const args = [
+    '-y', '-hide_banner', '-loglevel', 'fatal',
+    ...resilientInputArgs(),
+    '-ss', String(probeStart),
+    '-i', input,
+    '-t', String(probeSecs),
+    '-map', '0:v:0', '-sn', '-dn',
+    '-vf', vf,
+    '-c:v', gpuEncoder(codec),
+    ...gpuArgsForCodec(codec, vbr, profile),
+    '-pix_fmt', 'yuv420p',
+    '-an',
+    '-movflags', '+faststart',
+    probeOutput
+  ];
   try {
-    await runFFmpeg(args);
-    return true;
+    if (fs.existsSync(probeOutput)) fs.unlinkSync(probeOutput);
+    const started = Date.now();
+    await new Promise((resolve, reject) => {
+      const child = spawn(FFMPEG, args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+      let stderr = '';
+      child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+      child.on('error', reject);
+      child.on('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(stderr.slice(-800) || `FFmpeg exited with code ${code}`));
+      });
+    });
+    const probeBytes = fs.existsSync(probeOutput) ? fs.statSync(probeOutput).size : 0;
+    if (probeBytes <= 0) return null;
+    // Estimated full size if the whole video encoded at this density,
+    // minus the audio portion the probe didn't include.
+    const plannedBytes = (vbr * 1000 / 8) * probeSecs;
+    if (plannedBytes <= 0) return null;
+    const ratio = probeBytes / plannedBytes;
+    sendLog(`GPU probe: ${probeSecs}s encoded at ${(probeBytes / 1024 / 1024).toFixed(3)} MB in ${((Date.now() - started) / 1000).toFixed(1)}s (rate ratio ${ratio.toFixed(3)})`);
+    return Number.isFinite(ratio) && ratio > 0.1 && ratio < 10 ? ratio : null;
   } catch (error) {
-    sendLog(`WARNING: ${encoder} failed - actual ffmpeg error:`);
-    sendLog(error.message);
-    return false;
+    sendLog(`GPU probe skipped: ${error.message.slice(0, 200)}`);
+    return null;
+  } finally {
+    try {
+      if (fs.existsSync(probeOutput)) fs.unlinkSync(probeOutput);
+    } catch {}
   }
 }
 
-async function encodeCpu2Pass(input, output, vbr, abr, vf, passLog, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks) {
+async function encodeGpu(input, output, vbr, abr, vf, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks, progressContext = null) {
+  const encoder = gpuEncoder(codec);
+  const durationForProgress = progressContext || {
+    fromPercent: 10,
+    toPercent: 70,
+    duration: Math.max(1, clipDuration || 0),
+    label: 'Encoding (GPU)'
+  };
+
+  // Fast path restored: hw pipeline (NVDEC + NVENC) first, CPU decode as
+  // fallback. Damaged-source handling is a log warning only — no extra
+  // decode passes, no pipeline steering (the pre-damage-handling behavior).
+  const pipelines = ['hw', 'sw'];
+  for (const pipeline of pipelines) {
+    const args = gpuEncodeArgs(pipeline, input, output, vbr, abr, vf, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks);
+    if (pipeline === 'hw') {
+      sendLog(`GPU mode (${encoder}, ${codecLabel(codec)}, NVDEC + NVENC pipeline)...`);
+    } else {
+      sendLog(`GPU mode (${encoder}, ${codecLabel(codec)}, CPU decode fallback)...`);
+    }
+    try {
+      await runFFmpeg(args, null, durationForProgress);
+      return true;
+    } catch (error) {
+      if (error.message === 'Cancelled') throw error;
+      if (pipeline === 'hw') {
+        sendLog('WARNING: hardware pipeline failed, retrying with CPU decode:');
+        sendLog(error.message);
+        continue;
+      }
+      sendLog(`WARNING: ${encoder} failed - actual ffmpeg error:`);
+      sendLog(error.message);
+      return false;
+    }
+  }
+  return false;
+}
+
+async function encodeCpu2Pass(input, output, vbr, abr, vf, passLog, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks, progressDuration = 0) {
   const nul = process.platform === 'win32' ? 'NUL' : '/dev/null';
   const encoder = cpuEncoder(codec);
   sendLog('Pass 1/2: Analysis...');
@@ -858,7 +1220,7 @@ async function encodeCpu2Pass(input, output, vbr, abr, vf, passLog, codec, audio
     '-map', '0:v:0', '-sn', '-dn',
     ...cpuArgsForCodec(codec, vbr, passLog, 1, profile),
     '-an', '-f', 'null', nul
-  ]);
+  ], null, progressDuration ? { fromPercent: 5, toPercent: 50, duration: progressDuration, label: 'Pass 1/2 analysis' } : null);
 
   sendLog(`Pass 2/2: Encoding (${encoder}, ${codecLabel(codec)})...`);
   await runFFmpeg([
@@ -870,7 +1232,7 @@ async function encodeCpu2Pass(input, output, vbr, abr, vf, passLog, codec, audio
     '-movflags', '+faststart',
     ...audioOutputArgs(abr, audioMode, selectedAudioTracks),
     output
-  ]);
+  ], null, progressDuration ? { fromPercent: 50, toPercent: 70, duration: progressDuration, label: 'Pass 2/2 encode' } : null);
 }
 
 async function encodeAudioOnly(input, output, abr, clipStart, clipDuration, selectedAudioTracks) {
@@ -897,7 +1259,7 @@ function cleanupPassLogs(passLog) {
   }
 }
 
-function finishOutput(output, targetBytes, usePadding, expectedSize, tolerance = null) {
+async function finishOutput(output, targetBytes, usePadding, expectedSize, tolerance = null) {
   validateOutputVideo(output, expectedSize);
   let finalBytes = fs.statSync(output).size;
   if (usePadding && finalBytes < targetBytes) finalBytes = padFileToSize(output, targetBytes);
@@ -910,6 +1272,7 @@ function finishOutput(output, targetBytes, usePadding, expectedSize, tolerance =
   }
   const finalMb = finalBytes / 1024 / 1024;
   const pct = (finalBytes / targetBytes) * 100;
+
   sendProgress(100, 'Completed successfully!');
   sendLog(`DONE: ${finalMb.toFixed(3)} MB (${finalBytes} bytes, ${pct.toFixed(2)}% of limit)`);
   return finalMb;
@@ -929,13 +1292,20 @@ async function compress(params) {
   const keepOriginalResolution = Boolean(params.keep_original_resolution) || resolution === 'original';
   const useGpu = device === 'gpu';
   const usePadding = Boolean(params.use_padding);
-  const fullDuration = getDuration(input);
+  // Single probe: duration, streams, audio tracks all come from one ffmpeg
+  // run (cached by path+size+mtime, so repeated compress() calls are free).
+  const mediaInfo = getMediaInfoText(input);
+  const fullDuration = parseDurationFromText(mediaInfo);
   const clipStart = Math.max(0, Number(params.clip_start || 0));
   const requestedClipEnd = Number(params.clip_end || 0);
   const clipEnd = requestedClipEnd > clipStart ? Math.min(requestedClipEnd, fullDuration || requestedClipEnd) : 0;
   const clipDuration = clipEnd > clipStart ? clipEnd - clipStart : 0;
-  const mediaInfo = getMediaInfoText(input);
   const sourceHasVideo = hasVideoStream(mediaInfo);
+  // Cheap damaged-source detection: reuse the metadata probe we already ran
+  // (zero extra cost). A DVR-glitched file shows decode warnings right in the
+  // probe output. This only drives a log warning now — the encode path itself
+  // stays identical to the fast pre-damage-handling logic.
+  const damagedSource = sourceHasVideo && hasDecodeWarnings(mediaInfo);
   const exportAudioOnly = Boolean(params.export_audio_only) || !sourceHasVideo;
   const audioTracks = parseAudioTracksFromText(mediaInfo);
   const selectedAudioTracks = audioMode === 'remove' && !exportAudioOnly
@@ -950,6 +1320,16 @@ async function compress(params) {
   sendLog('Detecting video duration...');
   const duration = clipDuration || fullDuration;
   if (!duration) throw new Error('Could not detect video duration.');
+
+  // Damaged source: warn in the log but encode normally. The heavy auto-recovery
+  // (clean-point scanning, NVDEC skipping) slowed every compression by seconds
+  // of extra passes — removed. A damaged recording is the user's call: trim it
+  // in the Clip tab, or let it encode and see the damage preserved as-is.
+  if (damagedSource) {
+    sendLog('WARNING: this source may be corrupted (recording glitches detected in decode).', 'warning');
+    sendLog('         Output may contain artifacts from the damaged section.', 'warning');
+    sendLog('         Tip: trim the damaged part in the Clip tab before compressing.', 'warning');
+  }
 
   const targetBytes = Math.floor(targetMb * 1024 * 1024);
   const tolerance = normalizeTolerance(params, targetBytes);
@@ -995,7 +1375,32 @@ async function compress(params) {
     sendLog('--------------------------------------------------');
     sendProgress(10);
 
-    let ok = await encodeGpu(input, output, vbr, abr, vf, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks);
+    // Feasibility pre-check: hardware encoders have a practical minimum
+    // bitrate (~450 kbps at 1080p, less at lower resolutions). If the target
+    // demands less than that, warn BEFORE burning minutes on encodes that
+    // will all overshoot. Empirical floors measured on this machine.
+    const encoderFloorKbps = estimateEncoderFloor(codec, keepOriginalResolution || resolution === 'original' ? 1920 : Number(String(resolution).split('x')[0]) || 1920);
+    if (vbr < encoderFloorKbps) {
+      sendLog(`WARNING: target requires ${vbr} kbps, but the ${codecLabel(codec)} encoder reliably goes no lower than ~${encoderFloorKbps} kbps at this resolution.`, 'warning');
+      sendLog('         The output will likely overshoot. Consider: lower resolution, larger target, or trim the video.', 'warning');
+    }
+
+    // Probe a short segment first: NVENC's single estimate is often off by
+    // 5-20%, and one full retry costs far more than this seconds-long probe.
+    sendProgress(8, 'Probing encoder rate accuracy...');
+    const probeRatio = await probeGpuBitrate(input, vbr, vf, codec, profile, duration);
+    if (cancelRequested) throw new Error('Cancelled');
+    if (probeRatio && Math.abs(probeRatio - 1) > 0.05) {
+      const probedVbr = Math.max(Math.floor(vbr / probeRatio), 1);
+      if (probedVbr !== vbr) {
+        sendLog(`  -> probe-adjusted bitrate: ${probedVbr} kbps (was ${vbr})`);
+        vbr = probedVbr;
+      }
+    }
+    sendProgress(10, 'Encoding (GPU)...');
+
+    const gpuProgress = { fromPercent: 10, toPercent: 70, duration, label: 'Encoding (GPU)' };
+    let ok = await encodeGpu(input, output, vbr, abr, vf, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks, gpuProgress);
     if (!ok) throw new Error(`GPU ${codecLabel(codec)} encoding failed. Try another codec or CPU mode.`);
 
     const maxGpuCorrections = 10;
@@ -1016,6 +1421,20 @@ async function compress(params) {
 
       if (iteration === maxGpuCorrections) break;
 
+      // Encoder-floor detector: hardware encoders (especially av1_nvenc)
+      // have a MINIMUM quality floor (~500+ kbps at 1080p on complex
+      // content) — below it they simply ignore -b:v. Symptom: bitrate was
+      // cut drastically but the output did not shrink (or even grew).
+      // Retrying further is wasted GPU time; stop with an actionable hint.
+      if (previousBytes > 0 && fit.direction === 'over' && curBytes > previousBytes * 0.95) {
+        const actualKbps = Math.round(curBytes * 8 / 1000 / Math.max(1, duration));
+        throw new Error(
+          `The ${codecLabel(codec)} encoder cannot go low enough for this target: even at ${vbr} kbps it produced ${actualKbps} kbps. ` +
+          `${targetMb} MB for ${formatSeconds(duration)} at ${keepOriginalResolution ? 'source resolution' : resolution} is below the encoder's floor. ` +
+          'Fix: lower the resolution (e.g. 1280x720), raise the target size, or cut the video in the Clip tab.'
+        );
+      }
+
       const improvement = previousBytes > 0 ? (previousBytes - curBytes) / previousBytes : 1;
       if (fit.direction === 'under') stalledGpuCorrections = 0;
       else if (previousBytes > 0 && improvement < 0.005) stalledGpuCorrections += 1;
@@ -1032,7 +1451,7 @@ async function compress(params) {
       previousBytes = curBytes;
       vbr = nextVbr;
       sendLog(`  -> GPU retry bitrate: ${vbr} kbps`);
-      ok = await encodeGpu(input, output, vbr, abr, vf, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks);
+      ok = await encodeGpu(input, output, vbr, abr, vf, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks, gpuProgress);
       if (!ok) throw new Error(`GPU ${codecLabel(codec)} correction failed. Try another codec or CPU mode.`);
       sendProgress(Math.min(95, 70 + (iteration + 1) * 10));
     }
@@ -1059,8 +1478,8 @@ async function compress(params) {
   }
   sendLog('--------------------------------------------------');
 
-  sendProgress(5);
-  await encodeCpu2Pass(input, output, vbr, abr, vf, passLog, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks);
+  sendProgress(5, 'Pass 1/2 analysis...');
+  await encodeCpu2Pass(input, output, vbr, abr, vf, passLog, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks, duration);
   sendProgress(70);
 
   const maxCpuCorrections = 6;
@@ -1087,7 +1506,7 @@ async function compress(params) {
     vbr = fit.direction === 'under' && nextVbr <= vbr ? vbr + Math.max(25, Math.floor(vbr * 0.1)) : nextVbr;
     previousCpuBytes = curBytes;
     sendLog(`  -> CPU retry bitrate: ${vbr} kbps`);
-    await encodeCpu2Pass(input, output, vbr, abr, vf, passLog, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks);
+    await encodeCpu2Pass(input, output, vbr, abr, vf, passLog, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks, duration);
     sendProgress(Math.min(95, 70 + (iteration + 1) * 10));
   }
 
@@ -1104,13 +1523,48 @@ function outputPathFor(inputPath) {
   return path.join(outputDir, `${parsed.name}_compressed.${ext}`);
 }
 
+// Preview frame/segment/proxy caches live in %TEMP% and grow unbounded.
+// Sweep anything older than 7 days at startup — cheap on a few hundred files,
+// and never touches a cache written in the current session.
+function cleanupPreviewCaches() {
+  const cacheDirs = ['vcompress-preview-frames', 'vcompress-preview-cache', 'vcompress-preview-segments'];
+  const maxAgeMs = 7 * 24 * 60 * 60 * 1000;
+  for (const dirName of cacheDirs) {
+    const dir = path.join(app.getPath('temp'), dirName);
+    let entries;
+    try {
+      entries = fs.readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const name of entries) {
+      const full = path.join(dir, name);
+      try {
+        const stat = fs.statSync(full);
+        if (stat.isFile() && Date.now() - stat.mtimeMs > maxAgeMs) fs.unlinkSync(full);
+      } catch {}
+    }
+  }
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1052,
     height: 569,
-    resizable: false,
-    frame: false,
+    minWidth: 900,
+    minHeight: 560,
+    resizable: true,
+    // Fully native Windows frame: the system title bar with its own
+    // transparency (follows the wallpaper / DWM theme), the exe icon and
+    // standard caption buttons. Our custom bar markup in the page is hidden
+    // via CSS when the native frame is active.
+    frame: true,
+    title: 'VCompress',
     backgroundColor: '#0E1014',
+    // Window + taskbar icon: the exe-embedded icon (set by electron-builder)
+    // only shows in Explorer; the window itself needs an explicit icon, and
+    // Windows uses the window class icon for the taskbar entry.
+    icon: path.join(appDir, 'build', 'icon.ico'),
     show: false,
     webPreferences: {
       preload: path.join(appDir, 'preload.js'),
@@ -1126,18 +1580,37 @@ function createWindow() {
     if (pendingOpenFile) {
       mainWindow.webContents.send('open-file', pendingOpenFile);
     }
+    if (NVENC_AVAILABLE === null) {
+      const status = ffmpegStatus();
+      if (!status.found) {
+        // No usable ffmpeg: the probe would fail with ENOENT and get reported
+        // as "no NVENC", which is wrong. Leave it unknown until ffmpeg exists.
+        sendLog('NVENC probe skipped: FFmpeg not found.', 'warning');
+      } else {
+        probeNvencSupport().then((available) => {
+          NVENC_AVAILABLE = available;
+          mainWindow?.webContents.send('ffmpeg-status', ffmpegStatus());
+          if (!available) {
+            sendLog('GPU encoder (NVENC) not available - CPU mode will be used.', 'warning');
+          }
+        });
+      }
+    }
   });
 }
 
 ipcMain.handle('get-ffmpeg-status', () => ffmpegStatus());
+ipcMain.handle('get-nvenc-status', () => NVENC_AVAILABLE);
 ipcMain.handle('get-startup-file', () => pendingOpenFile);
 
-ipcMain.handle('load-file', (_event, filePath) => {
+ipcMain.handle('load-file', async (_event, filePath) => {
   try {
     if (!fs.existsSync(filePath)) return { success: false, error: 'File not found' };
     const stat = fs.statSync(filePath);
     const parsed = path.parse(filePath);
-    const mediaInfo = getMediaInfoText(filePath);
+    // Async probe: a sync ffmpeg spawn would freeze window drag and every
+    // other IPC handler for up to ~1s on big files.
+    const mediaInfo = await getMediaInfoTextAsync(filePath);
     const duration = parseDurationFromText(mediaInfo);
     const audioTracks = parseAudioTracksFromText(mediaInfo);
     const hasVideo = hasVideoStream(mediaInfo);
@@ -1178,8 +1651,20 @@ ipcMain.handle('browse-input-file', async () => {
   return { path: result.canceled ? null : result.filePaths[0] };
 });
 
+// One active compression job at a time. Job lifecycle:
+// - start: acquires the lock; a second start is rejected outright (the UI
+//   should never get here — but after a CANCEL the old job's async stages
+//   can still be winding down, and starting a new encode on top of it made
+//   two ffmpegs run concurrently, fighting over the output file).
+// - cancel: raises the flag AND kills the running child; all stages check
+//   the flag before spawning, so the job unwinds within one stage.
+// - finish: releases the lock in `finally`, so a cancel-then-start race is
+//   impossible: the new start either gets a clean lock or a rejection.
+let compressionJobActive = false;
+
 ipcMain.handle('compress-video', async (_event, params) => {
-  if (currentProcess) return { success: false, error: 'Already processing' };
+  if (compressionJobActive) return { success: false, error: 'Already processing' };
+  compressionJobActive = true;
   cancelRequested = false;
   const started = Date.now();
   try {
@@ -1199,6 +1684,7 @@ ipcMain.handle('compress-video', async (_event, params) => {
     currentProcess = null;
     currentOutputPath = null;
     currentPassLog = null;
+    compressionJobActive = false;
   }
 });
 
@@ -1226,17 +1712,32 @@ ipcMain.handle('show-in-folder', (_event, filePath) => {
 });
 
 ipcMain.handle('load-settings', () => loadSettings());
+ipcMain.handle('path-exists', (_event, targetPath) => {
+  try {
+    return typeof targetPath === 'string' && fs.existsSync(targetPath);
+  } catch {
+    return false;
+  }
+});
+// Returns a non-colliding output path: name.mp4 -> name (1).mp4 -> name (2).mp4...
+// so re-compressing the same source in one session never silently overwrites
+// the previous result (which users expect, since Windows Explorer behaves
+// this way when copying files).
+ipcMain.handle('reserve-output-path', async (_event, targetPath) => {
+  if (typeof targetPath !== 'string' || !targetPath) return targetPath;
+  const parsed = path.parse(targetPath);
+  let candidate = targetPath;
+  for (let counter = 1; counter < 1000; counter++) {
+    try {
+      if (!fs.existsSync(candidate)) return candidate;
+    } catch {
+      return candidate;
+    }
+    candidate = path.join(parsed.dir, `${parsed.name} (${counter})${parsed.ext}`);
+  }
+  return candidate;
+});
 ipcMain.handle('save-settings', (_event, settings) => saveSettings(settings));
-ipcMain.handle('minimize-window', () => mainWindow?.minimize());
-ipcMain.handle('maximize-window', () => ({ success: false }));
-ipcMain.handle('close-window', () => mainWindow?.close());
-ipcMain.handle('begin-window-drag', (_event, screenX, screenY) => {
-  const [x, y] = mainWindow.getPosition();
-  dragOffset = { x: Math.trunc(screenX) - x, y: Math.trunc(screenY) - y };
-});
-ipcMain.handle('drag-window', (_event, screenX, screenY) => {
-  mainWindow.setPosition(Math.trunc(screenX) - dragOffset.x, Math.trunc(screenY) - dragOffset.y, false);
-});
 
 const singleInstanceLock = app.requestSingleInstanceLock();
 
@@ -1255,7 +1756,13 @@ if (!singleInstanceLock) {
     }
   });
 
-  app.whenReady().then(createWindow);
+  app.whenReady().then(() => {
+    // Remove the default File/Edit/View/Window/Help menu bar — the app is
+    // fully self-contained and the menu only wastes title bar space.
+    Menu.setApplicationMenu(null);
+    createWindow();
+    cleanupPreviewCaches();
+  });
   app.on('window-all-closed', () => app.quit());
 }
 
