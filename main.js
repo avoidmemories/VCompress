@@ -1165,13 +1165,17 @@ function gpuEncodeArgs(gpuPipeline, input, output, vbr, abr, vf, codec, audioMod
 // with a corrected bitrate instead of relying on retry loops. Runs in the
 // normal output dir; ~seconds of work, cleaned up afterwards.
 async function probeGpuBitrate(input, vbr, vf, codec, profile, duration) {
-  // The probe pays off only when it is a small fraction of a full encode:
-  // it costs ~probeSecs of encoding to potentially save one FULL re-encode.
-  // On clips under ~60s the math is negative — a retry of a 10s clip costs
-  // the same as the probe itself — so skip probing short content entirely.
-  if (!duration || duration < 60) return null;
-  const probeSecs = Math.min(15, Math.floor(duration * 0.1));
-  if (probeSecs < 5) return null;
+  // Probe EVERYTHING now, including short clips. Rationale (measured):
+  // AV1-NVENC's VBR with multipass qres UNDERSHOT a 4.1 Mbps target by ~3%
+  // on easy content — combined with the container-overhead reserve that was
+  // already subtracting, a 35s/20MB clip landed 1.7MB short (pure padding).
+  // The sign of VBR error is not predictable; only a measured probe is.
+  // Short clips get a cheap 3s probe (≈1s of GPU time) — far cheaper than
+  // the ~4s a full retry of even a short encode costs.
+  if (!duration || duration < 4) return null;
+  const probeSecs = duration < 20
+    ? 3
+    : Math.min(15, Math.max(5, Math.floor(duration * 0.1)));
   const probeStart = Math.max(0, Math.floor((duration - probeSecs) / 2));
   const probeOutput = path.join(app.getPath('temp'), `vcompress-gpu-probe-${process.pid}.mp4`);
   const args = [
