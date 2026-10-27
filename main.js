@@ -1651,23 +1651,31 @@ ipcMain.handle('browse-input-file', async () => {
   return { path: result.canceled ? null : result.filePaths[0] };
 });
 
-// One active compression job at a time. Job lifecycle:
-// - start: acquires the lock; a second start is rejected outright (the UI
-//   should never get here — but after a CANCEL the old job's async stages
-//   can still be winding down, and starting a new encode on top of it made
-//   two ffmpegs run concurrently, fighting over the output file).
-// - cancel: raises the flag AND kills the running child; all stages check
-//   the flag before spawning, so the job unwinds within one stage.
-// - finish: releases the lock in `finally`, so a cancel-then-start race is
+// One active compression job at a time. Job lifecycle built on a
+// generation counter, which fixes the "cancel half-works" race:
+// - compress-video bumps the generation and clears the cancel flag — a job
+//   can only be cancelled by a cancel that arrives AFTER its start.
+// - cancel-compression bumps the generation too and kills the child: a
+//   compress-video still in flight (already past the lock check) will see
+//   a newer generation when it finally runs and reject itself immediately
+//   instead of starting an ffmpeg nobody wants anymore.
+// - finish releases the lock in finally; a cancel-then-start race is
 //   impossible: the new start either gets a clean lock or a rejection.
 let compressionJobActive = false;
+let compressionGeneration = 0;
 
 ipcMain.handle('compress-video', async (_event, params) => {
   if (compressionJobActive) return { success: false, error: 'Already processing' };
   compressionJobActive = true;
+  const myGeneration = ++compressionGeneration;
   cancelRequested = false;
   const started = Date.now();
   try {
+    // A cancel landed between the UI's start and this handler's turn —
+    // the generation moved past ours, so this job is dead on arrival.
+    if (myGeneration !== compressionGeneration) {
+      throw new Error('Cancelled');
+    }
     const finalSize = await compress(params);
     playCompleteSound();
     return {
@@ -1689,6 +1697,9 @@ ipcMain.handle('compress-video', async (_event, params) => {
 });
 
 ipcMain.handle('cancel-compression', () => {
+  // Bump the generation so any compress-video that already passed the
+  // lock check but hasn't spawned yet rejects itself as cancelled.
+  compressionGeneration++;
   cancelRequested = true;
   if (currentProcess) currentProcess.kill('SIGTERM');
   cleanupOutputArtifacts(currentOutputPath, currentPassLog);

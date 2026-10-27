@@ -1861,6 +1861,19 @@ class VCompress {
             this.log('ERROR: Select a valid clip range first', 'error');
             return;
         }
+        // Claim the job SYNCHRONOUSLY, before any await: a Cancel click
+        // landing during the path-reservation stage below used to see
+        // isProcessing=false, "cancel" nothing, and unlock the button while
+        // this start kept running into a live ffmpeg — the "cancel works
+        // every other time" bug. From here on, Cancel sees a real job.
+        this.isProcessing = true;
+        const runId = ++this.compressionRunId;
+        this.setDoneBadge(false);
+        this.showProgressState(useClip);
+        this.setCompressSettingsLocked(true);
+        this.startTime = Date.now();
+        this.startTimer();
+
         this.setDisplayedVideoDuration(this.currentFile.duration);
         const outputPath = this.outputPathWithSuffix(useClip ? 'compressed_clip' : 'compressed');
         if (outputPath) {
@@ -1875,15 +1888,14 @@ class VCompress {
                 this.log(`Overwriting existing file: ${outputPath}`);
             }
         }
-
-        this.isProcessing = true;
-        const runId = ++this.compressionRunId;
-        this.setDoneBadge(false);
-        this.setDoneBadge(false);
-        this.showProgressState(useClip);
-        this.setCompressSettingsLocked(true);
-        this.startTime = Date.now();
-        this.startTimer();
+        // A cancel arrived while we were reserving the path — stop here,
+        // the backend never saw this job (generation was bumped in main).
+        if (runId !== this.compressionRunId) {
+            this.isProcessing = false;
+            this.stopTimer();
+            this.setCompressSettingsLocked(false);
+            return;
+        }
 
         const audioPreset = this.audioBitrate.value;
         const exportAudioOnly = audioPreset === 'audio_only' || this.currentFile.is_audio_only;
@@ -1914,11 +1926,16 @@ class VCompress {
             clip_end: useClip ? this.clipEnd : 0
         };
 
+        // Declared OUTSIDE try: the finally-block references it and must not
+        // throw a ReferenceError when an early stage fails before the call.
+        let call = null;
         try {
             // Track the in-flight backend job so cancelCompression can await
             // its full unwind (the backend's finally releases the job lock)
             // before a new start is allowed — no more overlapping encodes.
-            const call = window.pywebview.api.compress_video(params);
+            // The promise is attached synchronously: between creating it and
+            // awaiting there is no gap where a Cancel could miss the job.
+            call = window.pywebview.api.compress_video(params);
             this.activeCompressionPromise = call;
             const result = await call;
             if (runId !== this.compressionRunId) return;
@@ -1965,7 +1982,11 @@ class VCompress {
                 this.stopTimer();
                 this.setCompressSettingsLocked(false);
             }
-            this.activeCompressionPromise = null;
+            // Only clear the tracked promise if it's still ours — cancel's
+            // await on it has priority, and a NEW job may already own it.
+            if (this.activeCompressionPromise === call) {
+                this.activeCompressionPromise = null;
+            }
         }
     }
 
@@ -1990,8 +2011,9 @@ class VCompress {
         // up. Wait for it so a quick restart can't overlap two jobs.
         if (this.activeCompressionPromise) {
             try { await this.activeCompressionPromise; } catch { /* already handled by its owner */ }
+            // the job's own finally clears the reference; do not null it here
+            // so we never race a newer job that just claimed the slot.
         }
-        this.activeCompressionPromise = null;
         this.isCancelling = false;
         this.isProcessing = false;
         this.showButtonState();
