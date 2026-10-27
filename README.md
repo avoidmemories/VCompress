@@ -83,9 +83,7 @@ Build a portable release yourself:
 
 ```bat
 npm run build:win
-node_modules
-ceditin
-cedit-x64.exe dist/win-unpacked/VCompress.exe --set-icon build/icon.ico
+node_modules\rcedit\bin\rcedit-x64.exe dist\win-unpacked\VCompress.exe --set-icon build\icon.ico
 ```
 
 (The second line embeds the app icon into the .exe so Explorer shows it —
