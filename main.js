@@ -631,7 +631,7 @@ function getPreviewSegmentCachePath(filePath, start, duration) {
 }
 
 async function createPreviewSegment(filePath, start = 0, duration = 8) {
-  if (!fs.existsSync(filePath)) return { success: false, error: 'File not found' };
+  if (!fs.existsSync(filePath)) return { success: false, error: `File not found: ${filePath}` };
   const mediaInfo = getMediaInfoText(filePath);
   const ignoreRotation = hasNonRightAngleRotation(mediaInfo);
   const { output, start: segmentStart, duration: segmentDuration } = getPreviewSegmentCachePath(filePath, start, duration);
