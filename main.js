@@ -773,7 +773,28 @@ function makeVf(resolution, fps = 60, keepOriginalResolution = false, mediaInfo 
 }
 
 function calcBitrate(mb, secs, abrKbps = 128, safety = 0.98) {
-  const targetBits = Number(mb) * 8 * 1024 * 1024 * safety;
+  // Container overhead: MP4 adds ~2.2% of muxing structure (moov atoms,
+  // packet headers, faststart rewrite) ON TOP of the video+audio streams.
+  // Additionally, NVENC's VBR tends to overshoot slightly on EASY content —
+  // when the bitrate budget is generous for the resolution (short clips with
+  // big targets, like 20MB for 6 seconds), the encoder lands a few percent
+  // above the requested rate. Both effects scale differently:
+  // - mux overhead: constant ~2.2%, always reserved;
+  // - VBR overshoot: grows with the bitrate-per-pixel ratio, so reserve
+  //   extra room only when the budget is generous (measured: +3.6% at
+  //   26 Mbps on 1080p; negligible at <5 Mbps where the encoder is pinned
+  //   to the target by content complexity).
+  const CONTAINER_OVERHEAD = 0.978;
+  const provisionalVbr = Math.max(
+    (Number(mb) * 8 * 1024 * 1024 * safety - abrKbps * 1000 * secs) / secs / 1000,
+    1
+  );
+  // bitrate-per-pixel proxy: high budget for 1080p60-class content means
+  // easy content — the overshoot zone. 5 Mbps is roughly where NVENC starts
+  // being pinned by the content instead of the budget at this size.
+  const generousBudget = Math.min(1, provisionalVbr / 5000);
+  const vbrOvershootReserve = 1 - 0.05 * generousBudget;
+  const targetBits = Number(mb) * 8 * 1024 * 1024 * safety * CONTAINER_OVERHEAD * vbrOvershootReserve;
   const audioBits = abrKbps * 1000 * secs;
   return Math.max(Math.floor((targetBits - audioBits) / secs / 1000), 1);
 }
