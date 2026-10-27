@@ -96,7 +96,7 @@ The output lands in `dist/` (an unpacked portable folder with `VCompress.exe`).
 
 - Windows 10/11
 - Node.js (setup.bat installs it via winget if missing) — only for running from source
-- FFmpeg binary — bundled in the release; for source builds put `ffmpeg.exe` into `ffmpeg/bin/`. Static Windows builds from [BtbN](https://github.com/BtbN/FFmpeg-Builds/releases) or [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) work (the BtbN build is recommended — it includes SVT-AV1 for fast CPU AV1 encoding).
+- FFmpeg binary — bundled in the release; for source builds put `ffmpeg.exe` into `ffmpeg/bin/`. The [gyan.dev full build](https://www.gyan.dev/ffmpeg/builds/) is what the release ships: it includes SVT-AV1 for fast CPU AV1 encoding, and its NVENC runtime works with Nvidia drivers from ~537 onward — covering older GPUs (GTX 10xx/16xx). Recent [BtbN](https://github.com/BtbN/FFmpeg-Builds/releases) master builds require very new drivers (~610+) and drop NVENC on machines whose GPU line has ended support.
 
 ## Notes
 
