@@ -93,7 +93,19 @@ run.bat      :: visible console
 run_hidden.vbs :: no console window
 ```
 
-Build a portable release yourself:
+Build release zips yourself (both variants in one run):
+
+```bat
+build-release.bat
+```
+
+This produces `dist\VCompress-Fast-win64.zip` (BtbN FFmpeg) and
+`dist\VCompress-Compatible-win64.zip` (Gyan FFmpeg) — icon embedded, correct
+FFmpeg placed into each automatically. Requires the two binaries to exist
+once: put them into `ffmpeg\btbn\ffmpeg.exe` and `ffmpeg\gyan\ffmpeg.exe`.
+Run with `fast` or `compatible` to build a single variant.
+
+Build just an unpacked portable folder (no zip, current `ffmpeg\bin\`):
 
 ```bat
 npm run build:win
@@ -104,7 +116,7 @@ node_modules\rcedit\bin\rcedit-x64.exe dist\win-unpacked\VCompress.exe --set-ico
 electron-builder's own icon step is disabled to avoid its winCodeSign
 download.)
 
-The output lands in `dist/` (an unpacked portable folder with `VCompress.exe`).
+The output lands in `dist\` (an unpacked portable folder with `VCompress.exe`).
 
 ## Requirements
 
