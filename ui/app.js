@@ -16,6 +16,11 @@ class VCompress {
         // Chain that fully unwinds a cancelled job in the background; a new
         // start during this window queues on it instead of being rejected.
         this.cancelUnwindPromise = null;
+        // Per-track preview audio: hidden <audio> element + its source state
+        // (see syncClipPreviewAudio). Token invalidates in-flight swaps.
+        this.clipPreviewAudioEl = null;
+        this.clipPreviewAudioPath = null;
+        this.clipPreviewAudioToken = 0;
         this.pendingOpenFile = window.pendingOpenFile || null;
         this.lastLoggedFFmpegPath = null;
         this.lastLoggedFilePath = null;
@@ -250,6 +255,33 @@ class VCompress {
             this.forceClipVideoRepaint();
         });
         this.clipVideo?.addEventListener('loadeddata', () => this.forceClipVideoRepaint());
+        // Per-track preview audio follows the video element's transport
+        // (play/pause/seek) so the swapped-in track stays in sync.
+        this.clipVideo?.addEventListener('play', () => {
+            const el = this.clipPreviewAudioEl;
+            if (el && this.clipPreviewAudioPath && this.clipVideo.muted) {
+                if (Math.abs(el.currentTime - this.clipVideo.currentTime) > 0.15) el.currentTime = this.clipVideo.currentTime;
+                el.play().catch(() => {});
+            }
+        });
+        this.clipVideo?.addEventListener('pause', () => {
+            this.clipPreviewAudioEl?.pause();
+        });
+        this.clipVideo?.addEventListener('seeked', () => {
+            const el = this.clipPreviewAudioEl;
+            if (el && this.clipPreviewAudioPath && this.clipVideo.muted) {
+                el.currentTime = this.clipVideo.currentTime;
+            }
+        });
+        this.clipVideo?.addEventListener('timeupdate', () => {
+            // drift correction while playing
+            const el = this.clipPreviewAudioEl;
+            if (el && this.clipPreviewAudioPath && !this.clipVideo.paused && this.clipVideo.muted) {
+                if (Math.abs(el.currentTime - this.clipVideo.currentTime) > 0.3) {
+                    el.currentTime = this.clipVideo.currentTime;
+                }
+            }
+        });
         this.clipFramePreview?.addEventListener('error', () => {
             this.clipFramePreview?.classList.remove('visible');
             this.clipFramePreview?.removeAttribute('src');
@@ -612,6 +644,101 @@ class VCompress {
         if (this.clipAudioCount) {
             this.clipAudioCount.textContent = `${this.selectedAudioTrackList().length}/${tracks.length}`;
         }
+        // Live audition: whatever tracks are checked now is what the clip
+        // preview PLAYS. See syncClipPreviewAudio().
+        this.syncClipPreviewAudio();
+    }
+
+    // --- Per-track preview audio -------------------------------------------------
+    // Chromium's <video> plays only the FIRST audio track and its selection
+    // API (video.audioTracks) is compiled out of Electron builds, so hearing
+    // track 2 (e.g. the microphone of a DVR recording) needs a separate
+    // hidden <audio> fed with a remux of just that track (main process does
+    // it in ~0.1s, cached). The video is muted and the audio element follows
+    // the video's play/pause/seek. When track 0 alone is selected the video
+    // itself is unmuted instead — native playback, perfect sync, no proxy.
+    ensureClipPreviewAudioElement() {
+        if (this.clipPreviewAudioEl) return this.clipPreviewAudioEl;
+        const el = document.createElement('audio');
+        el.preload = 'auto';
+        el.style.display = 'none';
+        document.body.appendChild(el);
+        this.clipPreviewAudioEl = el;
+
+        el.addEventListener('error', () => {
+            // Remuxed file failed to load — fall back to the video's own
+            // audio so the user is never left with silence by accident.
+            if (this.clipVideo) this.clipVideo.muted = false;
+            this.clipPreviewAudioPath = null;
+        });
+        return el;
+    }
+
+    async syncClipPreviewAudio() {
+        const video = this.clipVideo;
+        if (!video || !this.currentFile?.path) return;
+        const selected = [...this.selectedAudioTracks].sort((a, b) => a - b);
+
+        // Nothing checked: silence (matches what a render would produce).
+        if (!selected.length) {
+            video.muted = true;
+            this.stopClipPreviewAudio();
+            return;
+        }
+
+        // Track 0 in the selection: the <video> plays it natively (Chromium
+        // always plays track 0) — no proxy needed, perfect sync. When 0 is
+        // selected together with others, the preview plays 0 alone: hearing
+        // the OTHER tracks is one checkbox away (that's the point of the
+        // audition feature), and mixing tracks for preview is not worth the
+        // re-encode.
+        if (selected.includes(0)) {
+            video.muted = false;
+            this.stopClipPreviewAudio();
+            return;
+        }
+
+        // Only non-zero tracks selected: mute the video, play the remuxed
+        // first selected track.
+        video.muted = true;
+        const trackIndex = selected[0];
+        const filePath = this.currentFile.path;
+        const token = ++this.clipPreviewAudioToken;
+        try {
+            const result = await window.pywebview.api.prepare_audio_track_preview(filePath, trackIndex);
+            if (token !== this.clipPreviewAudioToken) return; // selection changed mid-flight
+            if (!result?.success || !result.path) {
+                this.log(`Audio preview for track ${trackIndex + 1} unavailable: ${result?.error || 'unknown'}`, 'warning');
+                video.muted = false;
+                return;
+            }
+            const el = this.ensureClipPreviewAudioElement();
+            if (this.clipPreviewAudioPath !== result.path) {
+                el.src = this.filePathToUrl(result.path);
+                this.clipPreviewAudioPath = result.path;
+            }
+            // keep in sync with the video's current position
+            if (!el.paused && video.paused) el.pause();
+            if (!video.paused) {
+                if (Math.abs(el.currentTime - video.currentTime) > 0.15) el.currentTime = video.currentTime;
+                el.play().catch(() => {});
+            }
+        } catch (error) {
+            if (token === this.clipPreviewAudioToken) {
+                this.log(`Audio preview error: ${error.message}`, 'warning');
+                video.muted = false;
+            }
+        }
+    }
+
+    stopClipPreviewAudio() {
+        this.clipPreviewAudioToken = (this.clipPreviewAudioToken || 0) + 1;
+        this.clipPreviewAudioPath = null;
+        if (this.clipPreviewAudioEl) {
+            this.clipPreviewAudioEl.pause();
+            this.clipPreviewAudioEl.removeAttribute('src');
+            this.clipPreviewAudioEl.load();
+        }
     }
 
     renderAudioTracks() {
@@ -768,6 +895,9 @@ class VCompress {
         this.prefetchPreviewSegmentPromise = null;
         this.prefetchPreviewSegmentResult = null;
         this.isDraggingClipTimeline = false;
+        // New file: drop any per-track preview audio and start clean.
+        this.stopClipPreviewAudio();
+        this.clipVideo.muted = false;
         this.clipVideo.pause();
         this.clipVideo.removeAttribute('src');
         this.clipVideo.load();
@@ -1756,7 +1886,9 @@ class VCompress {
     getCurrentSettings() {
         const audioPreset = this.audioBitrate.value;
         const audioMode = audioPreset === 'remove' ? 'remove' : this.audioMode.value;
-        const audioBitrate = parseInt(audioPreset) || 128;
+        // Preset string passes through ('opus64' or a number-as-string);
+        // the backend resolves the codec from it.
+        const audioBitrate = audioPreset;
         return {
             target_mb: parseFloat(this.targetSize.value),
             resolution: this.resolution.value,
@@ -1923,7 +2055,10 @@ class VCompress {
         const audioPreset = this.audioBitrate.value;
         const exportAudioOnly = audioPreset === 'audio_only' || this.currentFile.is_audio_only;
         const audioMode = audioPreset === 'remove' && !exportAudioOnly ? 'remove' : this.audioMode.value;
-        const audioBitrate = parseInt(audioPreset) || 128;
+        // Keep the PRESET value, not a parsed number: 'opus64' must survive
+        // to the backend so it can pick the libopus codec; plain numbers
+        // pass through as before.
+        const audioBitrate = audioPreset;
         this.syncSelectedAudioTracksFromInputs();
 
         const params = {

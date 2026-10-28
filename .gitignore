@@ -10,9 +10,13 @@ compressor_settings.json
 *.bak
 
 # ========== FFmpeg binaries ==========
-# Binary is too large for a repo — users put ffmpeg/bin/ffmpeg.exe
+# Binary is too large for a repo — users put ffmpeg/bin/
+ffmpeg/btbn/*.exe
+ffmpeg/gyan/*.exeffmpeg.exe
 # themselves or the packaged release ships it.
 ffmpeg/bin/
+ffmpeg/btbn/*.exe
+ffmpeg/gyan/*.exe
 *.exe
 
 # ========== Windows / OS artifacts ==========

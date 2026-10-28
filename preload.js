@@ -11,6 +11,7 @@ const api = {
   prepare_preview_segment: (filePath, start, duration) => ipcRenderer.invoke('prepare-preview-segment', filePath, start, duration),
   cancel_preview_proxy: () => ipcRenderer.invoke('cancel-preview-proxy'),
   get_preview_frame: (filePath, time) => ipcRenderer.invoke('get-preview-frame', filePath, time),
+  prepare_audio_track_preview: (filePath, trackIndex) => ipcRenderer.invoke('prepare-audio-track-preview', filePath, trackIndex),
   browse_input_file: () => ipcRenderer.invoke('browse-input-file'),
   compress_video: (params) => ipcRenderer.invoke('compress-video', params),
   cancel_compression: () => ipcRenderer.invoke('cancel-compression'),

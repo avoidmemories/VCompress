@@ -943,8 +943,13 @@ function qualityProfile(value) {
     };
   }
   return {
+    // Balanced = p4 (≈1.5x faster than p5) with Better-Quality-grade
+    // accuracy margins: with bitrate-limited encoding the QUALITY is set
+    // by the bitrate budget, not the preset — the preset only decides how
+    // efficiently the encoder spends it. So Balanced keeps the target-
+    // hitting safety of 'better' while encoding at p4 speed.
     name: 'Balanced',
-    gpuSafety: 0.94,
+    gpuSafety: 0.97,
     cpuSafety: 0.98,
     gpuCq: { h264: 20, h265: 22, av1: 24 },
     cpuPreset: { h264: 'medium', h265: 'medium', av1: '7' },
@@ -1040,10 +1045,15 @@ function cpuArgsForCodec(codec, vbr, passLog, pass, profile) {
   ];
 }
 
-function audioOutputArgs(abr, audioMode, selectedAudioTracks = []) {
+// useOpus: when the user picked the '64 kbps Opus' preset — encode with
+// libopus instead of AAC. Opus in MP4 is spec-valid and plays in Chromium-
+// based players (Discord); some legacy players expect AAC, hence the preset
+// is opt-in rather than the default.
+function audioOutputArgs(abr, audioMode, selectedAudioTracks = [], useOpus = false) {
   if (audioMode === 'remove' || !selectedAudioTracks.length) return ['-an'];
   const maps = selectedAudioTracks.flatMap((index) => ['-map', `0:a:${index}?`]);
   if (audioMode === 'keep') return [...maps, '-c:a', 'copy'];
+  if (useOpus) return [...maps, '-c:a', 'libopus', '-b:a', `${abr}k`, '-mapping_family', '1'];
   return [...maps, '-c:a', 'aac', '-b:a', `${abr}k`];
 }
 
@@ -1117,10 +1127,17 @@ function cleanVideoOutputMetadataArgs() {
 }
 
 function cleanupOutputArtifacts(output, passLog) {
-  if (output && fs.existsSync(output)) {
-    try {
-      fs.unlinkSync(output);
-    } catch {}
+  // Also sweep the .vctmp sibling: encodes write to it, so a cancelled or
+  // failed run leaves THAT file behind (the final name is never touched
+  // until the atomic rename in finishOutput).
+  const parsed = output ? path.parse(output) : null;
+  const tmpSibling = parsed ? path.join(parsed.dir, `${parsed.name}.vctmp${parsed.ext}`) : null;
+  for (const target of [output, tmpSibling]) {
+    if (target && fs.existsSync(target)) {
+      try {
+        fs.unlinkSync(target);
+      } catch {}
+    }
   }
   if (passLog) cleanupPassLogs(passLog);
 }
@@ -1129,7 +1146,7 @@ function cleanupOutputArtifacts(output, passLog) {
 // placement: 'hw' runs NVDEC + scale_cuda on the GPU (no CPU frame copies);
 // 'sw' is the legacy CPU decode + CPU scale path, used as fallback when the
 // hw pipeline fails to start (unsupported codec, no CUDA device, etc).
-function gpuEncodeArgs(gpuPipeline, input, output, vbr, abr, vf, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks) {
+function gpuEncodeArgs(gpuPipeline, input, output, vbr, abr, vf, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks, useOpus = false) {
   const encoder = gpuEncoder(codec);
   let inputArgs;
   let filter;
@@ -1173,7 +1190,7 @@ function gpuEncodeArgs(gpuPipeline, input, output, vbr, abr, vf, codec, audioMod
     ...gpuArgsForCodec(codec, vbr, profile),
     ...cleanVideoOutputMetadataArgs(),
     '-movflags', '+faststart',
-    ...audioOutputArgs(abr, audioMode, selectedAudioTracks),
+    ...audioOutputArgs(abr, audioMode, selectedAudioTracks, useOpus),
     output
   ];
   return args;
@@ -1249,7 +1266,7 @@ async function probeGpuBitrate(input, vbr, vf, codec, profile, duration) {
   }
 }
 
-async function encodeGpu(input, output, vbr, abr, vf, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks, progressContext = null) {
+async function encodeGpu(input, output, vbr, abr, vf, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks, progressContext = null, useOpus = false) {
   const encoder = gpuEncoder(codec);
   const durationForProgress = progressContext || {
     fromPercent: 10,
@@ -1263,7 +1280,7 @@ async function encodeGpu(input, output, vbr, abr, vf, codec, audioMode, profile,
   // decode passes, no pipeline steering (the pre-damage-handling behavior).
   const pipelines = ['hw', 'sw'];
   for (const pipeline of pipelines) {
-    const args = gpuEncodeArgs(pipeline, input, output, vbr, abr, vf, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks);
+    const args = gpuEncodeArgs(pipeline, input, output, vbr, abr, vf, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks, useOpus);
     if (pipeline === 'hw') {
       sendLog(`GPU mode (${encoder}, ${codecLabel(codec)}, NVDEC + NVENC pipeline)...`);
     } else {
@@ -1287,12 +1304,12 @@ async function encodeGpu(input, output, vbr, abr, vf, codec, audioMode, profile,
   return false;
 }
 
-async function encodeCpu2Pass(input, output, vbr, abr, vf, passLog, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks, progressDuration = 0) {
+async function encodeCpu2Pass(input, output, vbr, abr, vf, passLog, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks, progressDuration = 0, useOpus = false) {
   const nul = process.platform === 'win32' ? 'NUL' : '/dev/null';
   const encoder = cpuEncoder(codec);
   sendLog('Pass 1/2: Analysis...');
   await runFFmpeg([
-    ...clipInputArgs(input, clipStart, clipDuration), '-vf', vf,
+    '-y', ...clipInputArgs(input, clipStart, clipDuration), '-vf', vf,
     '-map', '0:v:0', '-sn', '-dn',
     ...cpuArgsForCodec(codec, vbr, passLog, 1, profile),
     '-an', '-f', 'null', nul
@@ -1300,13 +1317,13 @@ async function encodeCpu2Pass(input, output, vbr, abr, vf, passLog, codec, audio
 
   sendLog(`Pass 2/2: Encoding (${encoder}, ${codecLabel(codec)})...`);
   await runFFmpeg([
-    ...clipInputArgs(input, clipStart, clipDuration), '-vf', vf,
+    '-y', ...clipInputArgs(input, clipStart, clipDuration), '-vf', vf,
     '-map', '0:v:0', '-sn', '-dn',
     ...cpuArgsForCodec(codec, vbr, passLog, 2, profile),
     '-pix_fmt', 'yuv420p',
     ...cleanVideoOutputMetadataArgs(),
     '-movflags', '+faststart',
-    ...audioOutputArgs(abr, audioMode, selectedAudioTracks),
+    ...audioOutputArgs(abr, audioMode, selectedAudioTracks, useOpus),
     output
   ], null, progressDuration ? { fromPercent: 50, toPercent: 70, duration: progressDuration, label: 'Pass 2/2 encode' } : null);
 }
@@ -1314,7 +1331,7 @@ async function encodeCpu2Pass(input, output, vbr, abr, vf, passLog, codec, audio
 async function encodeAudioOnly(input, output, abr, clipStart, clipDuration, selectedAudioTracks) {
   sendLog('Audio-only export (MP3)...');
   await runFFmpeg([
-    ...clipInputArgs(input, clipStart, clipDuration),
+    '-y', ...clipInputArgs(input, clipStart, clipDuration),
     ...audioOnlyOutputArgs(abr, selectedAudioTracks),
     '-map_metadata', '-1',
     '-map_chapters', '-1',
@@ -1335,7 +1352,16 @@ function cleanupPassLogs(passLog) {
   }
 }
 
-async function finishOutput(output, targetBytes, usePadding, expectedSize, tolerance = null) {
+async function finishOutput(output, targetBytes, usePadding, expectedSize, tolerance = null, _unused = null, tmpOutput = null) {
+  // Atomic finalize: when encodes wrote to a .tmp sibling, claim the final
+  // name with a rename — instantaneous (same-volume rename = directory
+  // table update), and the real path never existed in a half-written state.
+  if (tmpOutput && tmpOutput !== output && fs.existsSync(tmpOutput)) {
+    if (fs.existsSync(output)) {
+      try { fs.unlinkSync(output); } catch { /* Windows may briefly hold it */ }
+    }
+    fs.renameSync(tmpOutput, output);
+  }
   validateOutputVideo(output, expectedSize);
   let finalBytes = fs.statSync(output).size;
   if (usePadding && finalBytes < targetBytes) finalBytes = padFileToSize(output, targetBytes);
@@ -1358,7 +1384,12 @@ async function compress(params) {
   const input = params.input_path;
   const output = params.output_path;
   const targetMb = Number(params.target_mb);
-  const abr = Number(params.audio_bitrate || 128);
+  // Audio preset: a number (kbps, AAC) or 'opus64' — Opus at 64 kbps,
+  // which outperforms 96 kbps AAC at half the size. Resolved to a numeric
+  // bitrate for budget math + a codec flag for the encode args.
+  const audioPreset = String(params.audio_bitrate || '128');
+  const useOpusAudio = audioPreset === 'opus64';
+  const abr = useOpusAudio ? 64 : Number(audioPreset) || 128;
   const resolution = params.resolution || '1920x1080';
   const fps = Number(params.fps || 60);
   const codec = normalizeCodec(params.video_codec);
@@ -1368,6 +1399,16 @@ async function compress(params) {
   const keepOriginalResolution = Boolean(params.keep_original_resolution) || resolution === 'original';
   const useGpu = device === 'gpu';
   const usePadding = Boolean(params.use_padding);
+  // Atomic output: encodes write to a temporary sibling and the final name
+  // is claimed by a single rename at the very end. A cancelled or failed
+  // encode can never leave a half-written file under the REAL name, and
+  // retries cycle the tmp file without touching the user's final path
+  // until success is certain. The marker goes INSIDE the stem ('.vctmp.mp4')
+  // so the real extension stays last — ffmpeg picks its muxer by extension,
+  // and a plain '.tmp' suffix made it fail with 'Unable to choose an output
+  // format' on every encode.
+  const parsedOut = path.parse(output);
+  const tmpOutput = path.join(parsedOut.dir, `${parsedOut.name}.vctmp${parsedOut.ext}`);
   // Single probe: duration, streams, audio tracks all come from one ffmpeg
   // run (cached by path+size+mtime, so repeated compress() calls are free).
   const mediaInfo = getMediaInfoText(input);
@@ -1413,18 +1454,18 @@ async function compress(params) {
   const vf = makeVf(resolution, fps, keepOriginalResolution, mediaInfo);
   const parsed = path.parse(output);
   const passLog = path.join(parsed.dir, `${parsed.name}_2pass`);
-  currentOutputPath = output;
+  currentOutputPath = tmpOutput;  // cancel-cleanup kills the tmp file
   currentPassLog = passLog;
 
   if (exportAudioOnly) {
     if (!audioTracks.length) throw new Error('No audio stream found.');
     sendLog(`Duration        : ${duration.toFixed(1)} sec${clipDuration ? ` (clip ${formatSeconds(clipStart)}-${formatSeconds(clipEnd)})` : ''}`);
     sendLog(`Export          : Audio Only (MP3)`);
-    sendLog(`Audio bitrate   : ${abr} kbps (${selectedAudioLabel})`);
+    sendLog(`Audio bitrate   : ${useOpusAudio ? `${abr} kbps Opus` : `${abr} kbps`} (${selectedAudioLabel})`);
     sendLog('--------------------------------------------------');
     sendProgress(15, 'Exporting audio...');
-    await encodeAudioOnly(input, output, abr, clipStart, clipDuration, selectedAudioTracks);
-    const finalBytes = fs.statSync(output).size;
+    await encodeAudioOnly(input, tmpOutput, abr, clipStart, clipDuration, selectedAudioTracks);
+    const finalBytes = fs.statSync(tmpOutput).size;
     const finalMb = finalBytes / 1024 / 1024;
     sendProgress(100, 'Completed successfully!');
     sendLog(`DONE: ${finalMb.toFixed(3)} MB (${finalBytes} bytes)`);
@@ -1451,7 +1492,7 @@ async function compress(params) {
     } else if (audioMode === 'keep') {
       sendLog(`Audio           : keep original (${selectedAudioLabel}${bitrateAudioKbps ? `, ${bitrateAudioKbps} kbps` : ''})`);
     } else {
-      sendLog(`Audio bitrate   : ${abr} kbps (${selectedAudioLabel}, ${bitrateAudioKbps} kbps total)`);
+      sendLog(`Audio bitrate   : ${useOpusAudio ? `${abr} kbps Opus` : `${abr} kbps`} (${selectedAudioLabel}, ${bitrateAudioKbps} kbps total)`);
     }
     sendLog('--------------------------------------------------');
     sendProgress(10);
@@ -1485,7 +1526,7 @@ async function compress(params) {
     sendProgress(10, 'Encoding (GPU)...');
 
     const gpuProgress = { fromPercent: 10, toPercent: 70, duration, label: 'Encoding (GPU)' };
-    let ok = await encodeGpu(input, output, vbr, abr, vf, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks, gpuProgress);
+    let ok = await encodeGpu(input, tmpOutput, vbr, abr, vf, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks, gpuProgress, useOpusAudio);
     if (!ok) throw new Error(`GPU ${codecLabel(codec)} encoding failed. Try another codec or CPU mode.`);
 
     const maxGpuCorrections = 10;
@@ -1493,7 +1534,7 @@ async function compress(params) {
     let stalledGpuCorrections = 0;
 
     for (let iteration = 0; iteration <= maxGpuCorrections; iteration++) {
-      const curBytes = fs.statSync(output).size;
+      const curBytes = fs.statSync(tmpOutput).size;
       const curMb = curBytes / 1024 / 1024;
       const pct = (curBytes / targetBytes) * 100;
       const label = iteration === 0 ? 'After GPU encoding' : `GPU correction ${iteration}`;
@@ -1503,7 +1544,7 @@ async function compress(params) {
       if (fit.ok) {
         // ORIGINAL behavior: undershoot is a success — padding tops the
         // file up silently in finishOutput. No quality-fill retries.
-        return finishOutput(output, targetBytes, usePadding, expectedOutputSize, tolerance);
+        return finishOutput(output, targetBytes, usePadding, expectedOutputSize, tolerance, null, tmpOutput);
       }
 
       if (iteration === maxGpuCorrections) break;
@@ -1550,12 +1591,12 @@ async function compress(params) {
       previousBytes = curBytes;
       vbr = nextVbr;
       sendLog(`  -> GPU retry bitrate: ${vbr} kbps`);
-      ok = await encodeGpu(input, output, vbr, abr, vf, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks, gpuProgress);
+      ok = await encodeGpu(input, tmpOutput, vbr, abr, vf, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks, gpuProgress, useOpusAudio);
       if (!ok) throw new Error(`GPU ${codecLabel(codec)} correction failed. Try another codec or CPU mode.`);
       sendProgress(Math.min(95, 70 + (iteration + 1) * 10));
     }
 
-    const finalBytes = fs.statSync(output).size;
+    const finalBytes = fs.statSync(tmpOutput).size;
     throw new Error(`GPU could not get under target size: ${finalBytes} bytes > ${targetBytes} bytes`);
   }
 
@@ -1573,19 +1614,19 @@ async function compress(params) {
   } else if (audioMode === 'keep') {
     sendLog(`Audio           : keep original (${selectedAudioLabel}${bitrateAudioKbps ? `, ${bitrateAudioKbps} kbps` : ''})`);
   } else {
-    sendLog(`Audio bitrate   : ${abr} kbps (${selectedAudioLabel}, ${bitrateAudioKbps} kbps total)`);
+    sendLog(`Audio bitrate   : ${useOpusAudio ? `${abr} kbps Opus` : `${abr} kbps`} (${selectedAudioLabel}, ${bitrateAudioKbps} kbps total)`);
   }
   sendLog('--------------------------------------------------');
 
   sendProgress(5, 'Pass 1/2 analysis...');
-  await encodeCpu2Pass(input, output, vbr, abr, vf, passLog, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks, duration);
+  await encodeCpu2Pass(input, tmpOutput, vbr, abr, vf, passLog, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks, duration, useOpusAudio);
   sendProgress(70);
 
   const maxCpuCorrections = 6;
   let previousCpuBytes = 0;
 
   for (let iteration = 0; iteration <= maxCpuCorrections; iteration++) {
-    const curBytes = fs.statSync(output).size;
+    const curBytes = fs.statSync(tmpOutput).size;
     const curMb = curBytes / 1024 / 1024;
     const pct = (curBytes / targetBytes) * 100;
     const label = iteration === 0 ? 'After CPU encoding' : `CPU correction ${iteration}`;
@@ -1594,7 +1635,7 @@ async function compress(params) {
 
     if (fit.ok) {
       cleanupPassLogs(passLog);
-      return finishOutput(output, targetBytes, usePadding, expectedOutputSize, tolerance);
+      return finishOutput(output, targetBytes, usePadding, expectedOutputSize, tolerance, null, tmpOutput);
     }
 
     if (iteration === maxCpuCorrections) break;
@@ -1605,12 +1646,12 @@ async function compress(params) {
     vbr = fit.direction === 'under' && nextVbr <= vbr ? vbr + Math.max(25, Math.floor(vbr * 0.1)) : nextVbr;
     previousCpuBytes = curBytes;
     sendLog(`  -> CPU retry bitrate: ${vbr} kbps`);
-    await encodeCpu2Pass(input, output, vbr, abr, vf, passLog, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks, duration);
+    await encodeCpu2Pass(input, tmpOutput, vbr, abr, vf, passLog, codec, audioMode, profile, clipStart, clipDuration, selectedAudioTracks, duration, useOpusAudio);
     sendProgress(Math.min(95, 70 + (iteration + 1) * 10));
   }
 
   cleanupPassLogs(passLog);
-  const finalBytes = fs.statSync(output).size;
+  const finalBytes = fs.statSync(tmpOutput).size;
   throw new Error(`Could not get under target size: ${finalBytes} bytes > ${targetBytes} bytes`);
 }
 
@@ -1743,6 +1784,64 @@ ipcMain.handle('load-file', async (_event, filePath) => {
   }
 });
 
+// Extracts ONE audio track into a standalone .m4a by remuxing (no re-
+// encode: ~0.1s for a typical clip). The clip preview plays this file in
+// a hidden <audio> element synced to the video, muted-video style — this
+// is how the user can AUDITION each track while toggling checkboxes in
+// the Audio tab: Chromium's <video> alone always plays track 0 and its
+// audioTracks selection API is compiled out, so per-track preview needs
+// a separate element fed with just that track.
+async function createAudioTrackPreview(filePath, trackIndex) {
+  if (!fs.existsSync(filePath)) return { success: false, error: `File not found: ${filePath}` };
+  const stat = fs.statSync(filePath);
+  const key = crypto
+    .createHash('sha1')
+    .update(`atpv1|${path.resolve(filePath)}|${stat.size}|${stat.mtimeMs}|${trackIndex}`)
+    .digest('hex');
+  const dir = path.join(app.getPath('temp'), 'vcompress-audio-previews');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+  const output = path.join(dir, `${key}.m4a`);
+  if (fs.existsSync(output) && fs.statSync(output).size > 0) {
+    return { success: true, path: output, cached: true };
+  }
+  const tmpOut = `${output}.vctmp.m4a`;
+  try {
+    if (fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut);
+    // Isolated runner, NOT runFFmpeg: the shared one registers its child as
+    // `currentProcess` (killable by CANCEL) and honors `cancelRequested` —
+    // a preview remux must never clobber an active encode's handle, and a
+    // recently-cancelled job must not silently kill this preview.
+    await new Promise((resolve, reject) => {
+      const child = spawn(FFMPEG, [
+        '-y', '-hide_banner', '-loglevel', 'error',
+        ...resilientInputArgs(),
+        '-i', filePath,
+        '-map', `0:a:${trackIndex}?`,
+        '-vn', '-sn', '-dn',
+        '-c:a', 'copy',
+        '-movflags', '+faststart',
+        tmpOut
+      ], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+      let stderr = '';
+      child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+      child.on('error', reject);
+      child.on('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(stderr.slice(-600) || `FFmpeg exited with code ${code}`));
+      });
+    });
+    fs.renameSync(tmpOut, output);
+    return { success: true, path: output, cached: false };
+  } catch (error) {
+    try {
+      if (fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut);
+      if (fs.existsSync(output)) fs.unlinkSync(output);
+    } catch {}
+    return { success: false, error: error.message };
+  }
+}
+
+ipcMain.handle('prepare-audio-track-preview', (_event, filePath, trackIndex) => createAudioTrackPreview(filePath, trackIndex));
 ipcMain.handle('prepare-preview-proxy', async (_event, filePath) => createPreviewProxy(filePath));
 ipcMain.handle('prepare-preview-segment', async (_event, filePath, start, duration) => createPreviewSegment(filePath, start, duration));
 ipcMain.handle('cancel-preview-proxy', () => cancelPreviewProxy());
