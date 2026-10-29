@@ -49,7 +49,7 @@ Fine-grained encoding options for the current run. These are applied to the next
 
 - **Encoding Device** — `GPU` uses your graphics card for speed, `CPU` is slower but works everywhere. CPU also hits the target size more precisely — its 2-pass encode analyses the video first, then encodes with a tighter bitrate budget than the single-pass GPU path.
 - **Video Codec** — `H.264` for maximum compatibility, `H.265` saves more size, `AV1` gives the best quality per megabyte but encodes slower and needs a modern player (AV1 hardware encoding requires RTX 40-series+).
-- **Quality Bias** — `Smaller Size`, `Balanced` or `Better Quality`: how much to trade encode time vs picture quality at the same target size.
+- **Quality Bias** — `Faster Encode`, `Balanced` or `Better Quality`: how much to trade encode time vs picture quality at the same target size.
 - **Audio Mode** — `Compress` re-encodes sound to your chosen bitrate, `Keep Original` passes it through untouched.
 - **Match Source FPS** — read FPS from the loaded video instead of typing it.
 - **Padding** — pads the file with zero bytes to hit exactly the target size
