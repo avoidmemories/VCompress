@@ -20,16 +20,6 @@ A portable Electron app that compresses any video down to a **target file size i
   <img src="https://i.imgur.com/Dq5nOgB.png" alt="Preview" width="1000">
 </p>
 
-## What it does
-
-- Compresses video to an exact target size, not just a quality level
-- GPU encode via NVENC or CPU 2-pass encode, three codecs each
-- **GPU compatibility probe**: checks H.264, H.265 and AV1 NVENC support at startup and reports incompatible driver/GPU combinations clearly
-- Clips a segment with a timeline before compressing
-- Picks audio tracks (named — e.g. game sound vs microphone), removes or keeps original sound, exports audio-only
-- Handles glitchy DVR/Game-Bar recordings gracefully: warns in the log instead of silently producing garbage
-- Shows detailed logs and a final size report
-
 ## Interface tour
 
 ### Compress tab
