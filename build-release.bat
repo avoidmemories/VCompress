@@ -46,6 +46,15 @@ if /I not "%ONLY%"=="fast"       call :BuildVariant compatible "VCompress-Compat
 echo.
 echo ================================================================================
 if "%BUILT%"=="2" echo Done: both zips are in dist\
+if "%BUILT%"=="2" echo Done: both zips are in dist\r
+
+REM Restore the DEV ffmpeg (BtbN): the Compatible build copied gyan
+REM into ffmpegin, which run.bat / run_hidden.vbs use - leaving it
+REM there silently switched every dev encode to the slow build.
+if not "%ONLY%"=="fast" (
+    copy /Y "%APPDIR%\ffmpeg\btbn\ffmpeg.exe" "%APPDIR%\ffmpeg\bin\ffmpeg.exe" >nul
+    echo Dev ffmpeg restored: BtbN
+)
 exit /b 0
 REM ---------------------------------------------------------------------------
 

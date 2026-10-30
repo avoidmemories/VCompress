@@ -2347,6 +2347,20 @@ class VCompress {
     updateFFmpegStatus(status) {
         const statusIndicator = this.ffmpegStatus.querySelector('.status-indicator');
         const statusValue = this.ffmpegStatus.querySelector('.status-value');
+        // Build name after "FFmpeg" (BtbN / Gyan), plain text in the label's
+        // typography. The separator is a plain middot with regular spaces —
+        // CSS tweaks (margins, first-letter) fought the font metrics and
+        // rendered the dot detached on real screens; a plain text node with
+        // natural spacing renders as one cohesive label.
+        const variantEl = document.getElementById('ffmpegVariant');
+        if (variantEl) {
+            if (status.found && status.variant) {
+                variantEl.textContent = ` · ${status.variant}`;
+                variantEl.hidden = false;
+            } else {
+                variantEl.hidden = true;
+            }
+        }
 
         if (status.found) {
             statusIndicator.style.background = '#4CAF50';

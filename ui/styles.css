@@ -154,6 +154,18 @@ body {
     border: 1px solid var(--border);
 }
 
+/* Build name next to "FFmpeg" in the status: BtbN (Fast) / Gyan
+ * (Compatible). Plain text in the label's own typography — the builds
+ * differ in driver requirements and encode speed, and this answers
+ * "which one am I running" at a glance. */
+.ffmpeg-variant {
+    /* Plain text: the middot and its spacing live in the text itself
+     * ("FFmpeg · BtbN") — no margins or pseudo-elements, so the dot sits
+     * where the font naturally puts it between the words. */
+    color: var(--text-secondary);
+    opacity: 0.75;
+}
+
 .status-indicator {
     width: 8px;
     height: 8px;

@@ -138,6 +138,17 @@ function probeNvencSupport() {
   return probeNvencCodecs().then((result) => result.supported && result.codecs.h264.ok);
 }
 
+// Which FFmpeg build is in use: 'BtbN' (master builds, Fast release) or
+// 'Gyan' (release builds, Compatible release). Determined from the -version
+// output — the two distributions identify themselves there. Shown next to
+// the status indicator so the user always knows WHICH build is active
+// (they differ in NVENC driver requirements and encode speed).
+function ffmpegVariant(versionText) {
+  if (/gyan\.dev/i.test(versionText)) return 'Gyan';
+  if (/BtbN/i.test(versionText) || /^ffmpeg version N-\d/i.test(versionText)) return 'BtbN';
+  return null;
+}
+
 function ffmpegStatus() {
   FFMPEG = resolveFFmpeg();
   // 'ffmpeg' as a bare name is a PATH fallback, not a found binary —
@@ -146,18 +157,30 @@ function ffmpegStatus() {
   // (and the NVENC probe) fails confusingly.
   let found = false;
   let version = 'FFmpeg executable not found. Put ffmpeg.exe into ffmpeg/bin/ next to the app.';
+  let variant = null;
   if (FFMPEG !== 'ffmpeg') {
     found = fs.existsSync(FFMPEG);
-    if (!found) version = `Resolved path does not exist: ${FFMPEG}`;
+    if (!found) {
+      version = `Resolved path does not exist: ${FFMPEG}`;
+    } else {
+      // Read the real version for direct paths too (previously only the
+      // PATH fallback did — direct-path users saw "not found" as version
+      // while the status itself said Ready).
+      const probe = spawnSync(FFMPEG, ['-version'], { encoding: 'utf8', windowsHide: true, timeout: 8000 });
+      if (probe.status === 0 && !probe.error) {
+        version = (probe.stdout || '').split(/\r?\n/)[0] || 'Ready';
+        variant = ffmpegVariant(version + ' ' + (probe.stdout || ''));
+      }
+    }
   } else {
     const probe = spawnSync(FFMPEG, ['-version'], { encoding: 'utf8', windowsHide: true, timeout: 5000 });
     found = probe.status === 0 && !probe.error;
     if (found) {
-      const line = (probe.stdout || '').split(/\r?\n/)[0] || '';
-      version = line.includes('ffmpeg') ? line : 'Ready';
+      version = (probe.stdout || '').split(/\r?\n/)[0] || 'Ready';
+      variant = ffmpegVariant(version + ' ' + (probe.stdout || ''));
     }
   }
-  return { found, path: FFMPEG, version, nvenc: NVENC_AVAILABLE, nvenc_codecs: NVENC_CODEC_SUPPORT };
+  return { found, path: FFMPEG, version, variant, nvenc: NVENC_AVAILABLE, nvenc_codecs: NVENC_CODEC_SUPPORT };
 }
 
 function sendLog(message, type = 'info') {
